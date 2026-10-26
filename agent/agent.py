@@ -23,7 +23,11 @@ import hashlib
 import json
 import os
 import random
+import socket
 import sys
+import urllib.error
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 import websockets
@@ -33,6 +37,7 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import config  # noqa: E402
 from keysource import (  # noqa: E402
     CertEntry,
     KeySource,
@@ -44,12 +49,58 @@ from keysource import (  # noqa: E402
     rfc4514_cn,
 )
 
-DEFAULT_SERVER = "ws://127.0.0.1:8000/ws/agent"
+DEFAULT_SERVER = config.DEFAULT_SERVER
 
 # Nối lại sau khi rớt: nhanh ở lần đầu, giãn dần để không nã server đang khởi
 # động lại.
 RECONNECT_MIN_SECONDS = 1.0
 RECONNECT_MAX_SECONDS = 30.0
+
+# Danh tính máy: cấp một lần, dùng mãi (xem agent/config.py). Nhờ nó trình
+# duyệt đã kích hoạt không phải gõ mã ghép cặp nữa.
+DEFAULT_DEVICE_FILE = config.DEFAULT_CONFIG_FILE
+
+
+def http_base(server_url: str) -> str:
+    """ws://host/ws/agent -> http://host. Agent chỉ cấu hình đúng một URL."""
+    base = server_url.split("/ws/agent", 1)[0]
+    if base.startswith("wss://"):
+        return "https://" + base[len("wss://") :]
+    if base.startswith("ws://"):
+        return "http://" + base[len("ws://") :]
+    return base
+
+
+def _post_json(url: str, payload: dict, timeout: float = 10.0) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+    return json.loads(raw) if raw else {}
+
+
+def register_device(server_url: str, token: str, label: str) -> dict:
+    """Ghi danh máy với server. -> {'device': …, 'activate_url': …}"""
+    return _post_json(
+        f"{http_base(server_url)}/api/devices",
+        {
+            "token": token,
+            "name": f"{socket.gethostname()} · {label}"[:120],
+            "platform": sys.platform,
+        },
+    )
+
+
+def new_activation(server_url: str, token: str) -> dict:
+    """Xin liên kết kích hoạt mới cho một trình duyệt khác."""
+    return _post_json(
+        f"{http_base(server_url)}/api/devices/activation", {"token": token}
+    )
+
 
 # Thư viện PKCS#11 do phần mềm ký của các CA Việt Nam cài sẵn trên Windows.
 # Tệp nằm trong System32 nên chỉ cần tên, không cần đường dẫn tuyệt đối.
@@ -308,16 +359,35 @@ async def confirm(prompt: str) -> bool:
 
 
 class Agent:
-    def __init__(self, source: KeySource, code: str, auto_approve: bool):
+    def __init__(
+        self,
+        source: KeySource,
+        code: str,
+        auto_approve: bool,
+        device_token: str | None = None,
+        paired: bool = False,
+        approve=None,
+        log=print,
+    ):
         self.source = source
         self.code = code
         self.auto_approve = auto_approve
+        self.device_token = device_token
+        # Đã ghi danh máy: trình duyệt kích hoạt rồi thì không cần mã nữa, nên
+        # chỉ nhắc mã như đường dự phòng.
+        self.paired = paired
+        # Cửa sổ agent thay hai cái này bằng hộp thoại và ô nhật ký của nó.
+        self.approve = approve or self._approve_in_terminal
+        self.log = log
+
+    async def _approve_in_terminal(self, request: dict) -> bool:
+        return await confirm("  Đồng ý ký? [Y/n] ")
 
     async def handle(self, message: dict) -> dict:
         kind = message.get("type")
         if kind == "list_certificates":
             entries = self.source.certificates()
-            print(f"  → gửi {len(entries)} chứng thư cho server")
+            self.log(f"  → gửi {len(entries)} chứng thư cho server")
             return {"certificates": [e.describe() for e in entries]}
 
         if kind == "sign":
@@ -338,15 +408,22 @@ class Agent:
                 f"Thuật toán server yêu cầu không hỗ trợ: {message.get('algo')!r}"
             ) from None
 
-        print()
-        print("  ┌─ YÊU CẦU KÝ ──────────────────────────────────────────")
-        print(f"  │ Tài liệu      : {message.get('document_name')}")
-        print(f"  │ Hash tài liệu : {message.get('document_digest')}")
-        print(f"  │ Thuật toán    : {algo.value}")
-        print(f"  │ Dữ liệu ký    : {len(tbs)} byte, SHA-256 {digest[:32]}…")
-        print("  └───────────────────────────────────────────────────────")
+        request = {
+            "document_name": message.get("document_name"),
+            "document_digest": message.get("document_digest"),
+            "algo": algo.value,
+            "tbs_bytes": len(tbs),
+            "tbs_digest": digest,
+        }
+        self.log("")
+        self.log("  ┌─ YÊU CẦU KÝ ──────────────────────────────────────────")
+        self.log(f"  │ Tài liệu      : {request['document_name']}")
+        self.log(f"  │ Hash tài liệu : {request['document_digest']}")
+        self.log(f"  │ Thuật toán    : {algo.value}")
+        self.log(f"  │ Dữ liệu ký    : {len(tbs)} byte, SHA-256 {digest[:32]}…")
+        self.log("  └───────────────────────────────────────────────────────")
 
-        if not self.auto_approve and not await confirm("  Đồng ý ký? [Y/n] "):
+        if not self.auto_approve and not await self.approve(request):
             raise KeySourceError("Người dùng từ chối ký")
 
         loop = asyncio.get_running_loop()
@@ -354,16 +431,20 @@ class Agent:
         signature = await loop.run_in_executor(
             None, lambda: self.source.sign(message["cert_id"], tbs, algo, params)
         )
-        print(f"  ✓ token trả về chữ ký {len(signature)} byte")
+        self.log(f"  ✓ token trả về chữ ký {len(signature)} byte")
         return {"signature_b64": base64.b64encode(signature).decode()}
 
     def _print_pairing_code(self) -> None:
-        print()
-        print("  ╔═══════════════════════════════════════╗")
-        print(f"  ║   MÃ GHÉP CẶP:  {self.code}              ║")
-        print("  ╚═══════════════════════════════════════╝")
-        print("  Nhập mã này vào trang web để ghép cặp.")
-        print()
+        self.log("")
+        self.log("  ╔═══════════════════════════════════════╗")
+        self.log(f"  ║   MÃ GHÉP CẶP:  {self.code}              ║")
+        self.log("  ╚═══════════════════════════════════════╝")
+        if self.paired:
+            self.log("  Máy đã ghi danh — chỉ cần mã này nếu mở trên trình duyệt")
+            self.log("  chưa kích hoạt (dùng nút “Kích hoạt trình duyệt”).")
+        else:
+            self.log("  Nhập mã này vào trang web để ghép cặp.")
+        self.log("")
 
     async def _serve(self, ws) -> None:
         """Phục vụ yêu cầu cho tới khi server đóng kết nối."""
@@ -372,6 +453,7 @@ class Agent:
                 {
                     "type": "hello",
                     "code": self.code,
+                    "device_token": self.device_token,
                     "name": self.source.label,
                     "platform": sys.platform,
                 }
@@ -386,7 +468,7 @@ class Agent:
                 data = await self.handle(message)
                 reply = {"id": request_id, "ok": True, "data": data}
             except Exception as exc:  # trả lỗi về server, giữ kết nối
-                print(f"  ✗ {exc}")
+                self.log(f"  ✗ {exc}")
                 reply = {"id": request_id, "ok": False, "error": str(exc)}
             await ws.send(json.dumps(reply))
 
@@ -394,8 +476,8 @@ class Agent:
         """Giữ kết nối, tự nối lại khi rớt.
 
         Server khởi động lại (deploy, mạng chớp) là chuyện thường; agent chết
-        theo thì người ký phải tự đi mở lại terminal. Mã ghép cặp giữ nguyên
-        nên trang web không phải nhập lại.
+        theo thì người ký phải tự đi mở lại. Danh tính máy giữ nguyên nên
+        trình duyệt đã kích hoạt không phải làm gì thêm.
         """
         delay = RECONNECT_MIN_SECONDS
         announced = False
@@ -405,19 +487,19 @@ class Agent:
                 async with websockets.connect(
                     server_url, max_size=4 * 1024 * 1024
                 ) as ws:
-                    print(f"Đã kết nối {server_url}")
+                    self.log(f"Đã kết nối {server_url}")
                     if not announced:
                         self._print_pairing_code()
                         announced = True
                     delay = RECONNECT_MIN_SECONDS
                     await self._serve(ws)
-                print("  Server đóng kết nối.")
+                self.log("  Server đóng kết nối.")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"  Mất kết nối: {exc}")
+                self.log(f"  Mất kết nối: {exc}")
 
-            print(f"  Thử nối lại sau {delay:.0f}s…")
+            self.log(f"  Thử nối lại sau {delay:.0f}s…")
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX_SECONDS)
 
@@ -514,6 +596,21 @@ def main() -> int:
         action="store_true",
         help="liệt kê thư viện PKCS#11 tìm thấy trên máy rồi thoát",
     )
+    parser.add_argument(
+        "--device-file",
+        default=str(DEFAULT_DEVICE_FILE),
+        help=f"nơi lưu danh tính máy (mặc định {DEFAULT_DEVICE_FILE})",
+    )
+    parser.add_argument(
+        "--activate-browser",
+        action="store_true",
+        help="mở lại liên kết kích hoạt để gắn thêm một trình duyệt",
+    )
+    parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="không tự mở trình duyệt khi ghi danh máy lần đầu",
+    )
     args = parser.parse_args()
 
     if args.find_drivers:
@@ -540,8 +637,31 @@ def main() -> int:
         return status
     # Chưa cắm token vẫn chạy tiếp: cắm vào rồi bấm "Kết nối" trên web là thấy.
 
-    agent = Agent(source, args.code or f"{random.randint(0, 999999):06d}",
-                  args.auto_approve)
+    device_file = Path(args.device_file)
+    # Mốc là "đã mở trang kích hoạt", không phải "tệp đã tồn tại": lần đầu
+    # chạy mà server chưa lên thì lần sau vẫn phải mở.
+    needs_activation = not config.browser_activated(device_file)
+    device_token = config.device_token(device_file)
+    paired = False
+    try:
+        info = register_device(args.server, device_token, source.label)
+        paired = True
+        print(f"Máy đã ghi danh: {info['device']['id']}")
+        if args.activate_browser or (needs_activation and not args.no_activate):
+            url = info["activate_url"]
+            print(f"Mở trình duyệt để kích hoạt: {url}")
+            webbrowser.open(url)
+            config.mark_browser_activated(device_file)
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
+        print(f"Chưa ghi danh được máy ({exc}) — vẫn dùng được mã ghép cặp.")
+
+    agent = Agent(
+        source,
+        args.code or f"{random.randint(0, 999999):06d}",
+        args.auto_approve,
+        device_token=device_token if paired else None,
+        paired=paired,
+    )
     try:
         # run() tự nối lại, nên chỉ thoát khi người dùng dừng.
         asyncio.run(agent.run(args.server))

@@ -11,6 +11,7 @@ Bỏ qua nhóm này khi chỉ muốn test nhanh:
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -74,7 +75,7 @@ def owner(lab):
 def test_ky_tu_do_dat_pades_b_lt(owner, lab, pdf):
     doc_id = upload(owner, pdf)
 
-    status, body = sign(owner, f"/api/documents/{doc_id}", "111111", reason="Phê duyệt")
+    status, body = sign(owner, f"/api/documents/{doc_id}", "111111")
     assert status == 200, body
     assert body["signatures"][0]["profile"] == "B-LT"
 
@@ -291,7 +292,6 @@ def test_nhieu_token_cung_luc_ky_dung_token(lab, owner, pdf):
             "cert_id": cert_for(owner, "555555", "TRAN THI BICH"),
             "page": 1,
             "box": BOX_RIGHT,
-            "reason": "Ký bằng token công ty B",
         },
     )
     assert status == 200, body
@@ -325,7 +325,6 @@ def test_logo_va_mau_duoc_ve_vao_hinh_chu_ky(owner, lab, pdf):
             "cert_id": first_cert(owner, "111111"),
             "page": 1,
             "box": [65, 390, 330, 460],
-            "reason": "Phê duyệt",
             "color": "do",
             "use_logo": True,
         },
@@ -334,6 +333,82 @@ def test_logo_va_mau_duoc_ve_vao_hinh_chu_ky(owner, lab, pdf):
 
     signed = owner.download(f"/api/documents/{doc_id}/download")
     assert _appearance_has_image(signed), "logo không được nhúng vào hình chữ ký"
+
+
+def test_dau_tich_chim_bat_tat_theo_yeu_cau(owner, lab, pdf):
+    """Dấu tích chìm là tuỳ chọn: bật thì có, tắt thì hình chữ ký sạch."""
+    doc_id = upload(owner, pdf)
+    for box, check_mark in (([65, 390, 265, 445], True), ([300, 390, 500, 445], False)):
+        status, body = owner.post(
+            f"/api/documents/{doc_id}/sign",
+            body={
+                "agent_code": "111111",
+                "cert_id": first_cert(owner, "111111"),
+                "page": 1,
+                "box": box,
+                "check_mark": check_mark,
+            },
+        )
+        assert status == 200, body
+
+    signed = owner.download(f"/api/documents/{doc_id}/download")
+    assert _appearance_check_marks(signed) == [True, False]
+
+
+def test_cookie_thiet_bi_ky_duoc_ma_khong_can_ma_ghep_cap(owner, lab, pdf):
+    """Cài agent + kích hoạt một lần -> trình duyệt tự thấy token đang cắm.
+
+    Đây là đường chính của giao diện: không gõ mã 6 số, không bấm "Kết nối".
+    """
+    token = json.loads((lab.data / "device-111111.json").read_text())["device_token"]
+
+    # Trình duyệt mới: chưa gắn máy nào.
+    status, info = owner.get("/api/agents")
+    assert status == 200 and info["device"] is None, info
+
+    # Agent mở liên kết kích hoạt trong trình duyệt mặc định.
+    status, activation = owner.post("/api/devices/activation", body={"token": token})
+    assert status == 200, activation
+    ticket = activation["activate_url"].split("t=", 1)[1]
+    assert owner.get(f"/activate?t={ticket}")[0] == 200  # 303 -> trang ký
+
+    # Từ đây danh sách chứng thư tự hiện, không cần mã ghép cặp.
+    status, info = owner.get("/api/agents")
+    assert status == 200, info
+    assert info["online"] is True
+    assert info["device"]["platform"] == sys.platform
+    assert info["certificates"][0]["subject"] == "NGUYEN VAN A"
+
+    doc_id = upload(owner, pdf)
+    status, body = owner.post(
+        f"/api/documents/{doc_id}/sign",
+        body={
+            "cert_id": info["certificates"][0]["id"],
+            "page": 1,
+            "box": BOX_LEFT,
+        },
+    )
+    assert status == 200, body
+
+    _, reports = owner.get(f"/api/documents/{doc_id}/verify")
+    assert reports[0]["signer"] == "NGUYEN VAN A"
+    assert reports[0]["intact"] and reports[0]["trusted"]
+
+    # Vé chỉ dùng một lần; và quên máy thì quay lại trạng thái chưa gắn.
+    assert owner.get(f"/activate?t={ticket}")[0] == 400
+    assert owner.request("DELETE", "/api/devices/browser")[0] == 204
+    assert owner.get("/api/agents")[1]["device"] is None
+
+
+def test_khong_co_thiet_bi_lan_ma_thi_tu_choi_ky(owner, lab, pdf):
+    """Trình duyệt lạ không mượn được agent của người khác."""
+    doc_id = upload(owner, pdf)
+    status, body = owner.post(
+        f"/api/documents/{doc_id}/sign",
+        body={"cert_id": "bat-ky", "page": 1, "box": BOX_LEFT},
+    )
+    assert status == 404
+    assert "chưa gắn với máy nào" in body["detail"]
 
 
 def test_agent_tu_noi_lai_khi_server_khoi_dong_lai(lab, pdf):
@@ -469,3 +544,30 @@ def _appearance_has_image(signed: bytes) -> bool:
         if resources is not None and images_in(resources):
             return True
     return False
+
+
+def _appearance_check_marks(signed: bytes) -> list[bool]:
+    """Mỗi chữ ký: hình của nó có vẽ dấu tích chìm hay không."""
+    reader = _reader(signed)
+
+    def deref(obj):
+        return reader.get_object(obj.reference) if hasattr(obj, "reference") else obj
+
+    def has_mark(resources) -> bool:
+        resources = deref(resources)
+        # Dấu tích vẽ qua một ExtGState riêng để đặt độ mờ — có nó là có tích.
+        if "/CheckMarkGS" in deref(resources.get("/ExtGState", {})):
+            return True
+        for entry in deref(resources.get("/XObject", {})).values():
+            nested = deref(entry).get("/Resources")
+            if nested is not None and has_mark(nested):
+                return True
+        return False
+
+    marks = []
+    for embedded in reader.embedded_signatures:
+        appearances = embedded.sig_field.get("/AP")
+        normal = deref(appearances).get("/N") if appearances is not None else None
+        if normal is not None:
+            marks.append(has_mark(deref(normal).get("/Resources", {})))
+    return marks

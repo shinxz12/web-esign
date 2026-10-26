@@ -18,7 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "agent"))
 
-from app import store, trust  # noqa: E402
+from app import signing, store, trust  # noqa: E402
 from keysource import KeySourceError, ecdsa_raw_to_der, pss_salt_length  # noqa: E402
 
 
@@ -195,3 +195,48 @@ def test_nap_mac_dinh_chi_khi_thu_muc_con_rong(tmp_path: pathlib.Path) -> None:
         path.unlink()
     assert trust.seed_trust_store(target) == 0
     assert len(list(target.iterdir())) == 2
+
+
+
+# --------------------------------------------------------------------------
+# Hình chữ ký: tên tổ chức dài phải xuống dòng, không tràn khỏi ô ký
+# --------------------------------------------------------------------------
+
+LONG_CN = "CONG TY CO PHAN PHAT TRIEN HA TANG KY THUAT VMCTECH"
+
+
+def _appearance_text(width: float, height: float, cn: str, monkeypatch) -> list[str]:
+    monkeypatch.setattr(signing, "subject_cn", lambda cert: cn)
+    monkeypatch.setattr(signing, "subject_tax_code", lambda cert: "0101234567")
+    appearance = signing.SignatureAppearance(page=0, box=(0, 0, width, height))
+    lines, params = signing._appearance_lines(None, appearance)
+    assert params == {}  # mọi giá trị đã nội suy sẵn, trừ %(ts)s của pyHanko
+    return lines
+
+
+@pytest.mark.parametrize(
+    "width, height", [(140, 76), (165, 90), (190, 104), (220, 120)]
+)
+def test_ten_dai_xuong_dong_vua_be_rong_o_ky(width, height, monkeypatch) -> None:
+    lines = _appearance_text(width, height, LONG_CN, monkeypatch)
+    avail = width - 6 - 3  # lề trái/phải của phần chữ khi không có logo
+
+    for line in lines:
+        estimated = len(line) * signing.STAMP_FONT_SIZE * 0.52
+        assert estimated <= avail + 0.5, line
+
+    words = " ".join(lines).split()
+    assert all(word in words for word in LONG_CN.split())  # không mất chữ nào
+
+
+def test_o_ky_hep_van_giu_du_ba_muc(monkeypatch) -> None:
+    """Ô nhỏ nhất vẫn phải có người ký, MST và ngày ký."""
+    text = " ".join(_appearance_text(140, 76, LONG_CN, monkeypatch))
+    assert "Ký bởi:" in text
+    assert "MST: 0101234567" in text
+    assert "Ngày ký:" in text and "%(ts)s" in text
+
+
+def test_hinh_chu_ky_khong_con_ly_do_va_noi_ky(monkeypatch) -> None:
+    text = " ".join(_appearance_text(165, 90, "NGUYEN VAN A", monkeypatch)).lower()
+    assert "lý do" not in text and "nơi ký" not in text

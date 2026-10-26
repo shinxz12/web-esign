@@ -15,13 +15,17 @@ import io
 import logging
 import os
 import pathlib
+import textwrap
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import IO, Any, Sequence
 
 from asn1crypto import cms as asn1_cms
 from asn1crypto import x509 as asn1_x509
+from pyhanko.pdf_utils import generic
+from pyhanko.pdf_utils.content import ResourceType
 from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
+from pyhanko.pdf_utils.generic import pdf_name
 from pyhanko.pdf_utils.layout import (
     AxisAlignment,
     InnerScaling,
@@ -37,7 +41,7 @@ from pyhanko.sign.signers import PdfSignatureMetadata, PdfSigner
 from pyhanko.sign.signers.pdf_cms import ExternalSigner
 from pyhanko.sign.signers.pdf_signer import PdfTBSDocument
 from pyhanko.sign.timestamps import HTTPTimeStamper
-from pyhanko.stamp import TextStampStyle
+from pyhanko.stamp import TextStamp, TextStampStyle
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from . import trust
@@ -183,11 +187,10 @@ class SignatureAppearance:
 
     page: int  # 0-based
     box: tuple[float, float, float, float]  # (x1, y1, x2, y2), gốc dưới-trái
-    reason: str | None = None
-    location: str | None = None
     logo: bytes | None = None  # PNG/JPEG vẽ bên trái hình chữ ký
     color: str = "xanh-duong"
     show_border: bool = False
+    check_mark: bool = True  # dấu tích xanh lá vẽ đè lên hình chữ ký
 
 
 @dataclass
@@ -263,12 +266,113 @@ def _logo_content(logo_png: bytes):
     return PdfImage(image)
 
 
+# Dấu tích xanh lá quen thuộc trên chữ ký số VN — vẽ chìm phía dưới phần chữ.
+# Nét vector nên không cần ảnh, không phụ thuộc Pillow và không làm phình tệp.
+CHECK_MARK_COLOR = (0.13, 0.70, 0.16)
+CHECK_MARK_OPACITY = 0.38  # đủ thấy dấu tích mà chữ bên trên vẫn đọc được
+CHECK_MARK_GS = "/CheckMarkGS"
+
+
+def _check_mark_commands(width: float, height: float) -> bytes:
+    """Nét tích chìm, căn giữa khung, cỡ theo cạnh ngắn."""
+    size = min(height * 0.60, width * 0.28)
+    left = (width - size) / 2
+    bottom = (height - size) / 2
+    # Ba điểm của nét tích trong ô vuông đơn vị.
+    (x1, y1), (x2, y2), (x3, y3) = (
+        (left + px * size, bottom + py * size)
+        for px, py in ((0.06, 0.52), (0.38, 0.14), (0.95, 0.84))
+    )
+    return b"q %s gs %g %g %g RG %g w 1 J 1 j %g %g m %g %g l %g %g l S Q" % (
+        CHECK_MARK_GS.encode("ascii"),
+        *CHECK_MARK_COLOR,
+        size * 0.18,
+        x1,
+        y1,
+        x2,
+        y2,
+        x3,
+        y3,
+    )
+
+
+@dataclass(frozen=True)
+class CheckMarkStampStyle(TextStampStyle):
+    """TextStampStyle + dấu tích chìm vẽ dưới phần chữ."""
+
+    check_mark: bool = False
+
+    def create_stamp(self, writer, box, text_params) -> "_CheckMarkStamp":
+        return _CheckMarkStamp(
+            writer=writer, style=self, box=box, text_params=text_params
+        )
+
+
+class _CheckMarkStamp(TextStamp):
+    def _render_inner_content(self):
+        commands = super()._render_inner_content()
+        if not self.style.check_mark:
+            return commands
+
+        alpha = generic.FloatObject(CHECK_MARK_OPACITY)
+        self.set_resource(
+            category=ResourceType.EXT_G_STATE,
+            name=pdf_name(CHECK_MARK_GS),
+            value=generic.DictionaryObject(
+                {pdf_name("/CA"): alpha, pdf_name("/ca"): alpha}
+            ),
+        )
+        # Chèn lên đầu: dấu tích nằm dưới chữ, chữ vẫn đọc được.
+        # Sau super(): khung đã được chốt kích thước bởi bước dàn chữ.
+        commands.insert(0, _check_mark_commands(self.box.width, self.box.height))
+        return commands
+
+
+# Cỡ chữ trên hình chữ ký. 7pt là cỡ các CA công cộng VN hay dùng: đọc được
+# khi in, mà ô ký chuẩn 180–280pt vẫn chứa đủ ba dòng.
+STAMP_FONT_SIZE = 7
+
+# Bề rộng trung bình một ký tự so với cỡ chữ. Dùng để ước lượng chỗ xuống dòng
+# — không cần chính xác vì SHRINK_TO_FIT vẫn co lại nếu hụt.
+_CHAR_WIDTH_RATIO = 0.52
+
+# Dạng ngày ký. %z cho ra +0700 như Adobe hiển thị. Ô hẹp thì xuống dòng chứ
+# không cắt bớt thông tin; chỉ ô hẹp đến mức một mình ngày cũng không vừa mới
+# rút gọn dần.
+_TIMESTAMP_FORMATS = (
+    ("%d/%m/%Y %H:%M:%S %z", 25),
+    ("%d/%m/%Y %H:%M", 16),
+    ("%d/%m/%Y", 10),
+)
+
+
+def _text_left(appearance: "SignatureAppearance") -> int:
+    """Lề trái phần chữ: chừa một ô vuông bằng chiều cao khung cho logo."""
+    height = abs(appearance.box[3] - appearance.box[1])
+    return int(height) + 4 if appearance.logo else 6
+
+
+def _layout_budget(appearance: "SignatureAppearance") -> tuple[int, str]:
+    """(số ký tự mỗi dòng, định dạng ngày ký) vừa với bề rộng còn lại."""
+    width = abs(appearance.box[2] - appearance.box[0])
+    avail = max(40.0, width - _text_left(appearance) - 3)
+    max_chars = max(14, int(avail / (STAMP_FONT_SIZE * _CHAR_WIDTH_RATIO)))
+
+    # Ngày ký được phép chiếm trọn một dòng, nên chỉ cần nó vừa một mình.
+    ts_format = _TIMESTAMP_FORMATS[-1][0]
+    for fmt, size in _TIMESTAMP_FORMATS:
+        if size <= max_chars:
+            ts_format = fmt
+            break
+    return max_chars, ts_format
+
+
 def _stamp_style(
     lines: Sequence[str], appearance: "SignatureAppearance"
-) -> TextStampStyle:
+) -> CheckMarkStampStyle:
     """Bố cục theo thông lệ chữ ký số VN: logo bên trái, chữ bên phải."""
     font_path = find_font()
-    font_size = 7
+    font_size = STAMP_FONT_SIZE
     color = STAMP_COLORS.get(appearance.color, STAMP_COLORS[DEFAULT_STAMP_COLOR])
     if font_path:
         box_style = TextBoxStyle(
@@ -279,12 +383,11 @@ def _stamp_style(
     else:  # font chuẩn PDF, không có dấu tiếng Việt
         box_style = TextBoxStyle(font_size=font_size, text_color=color)
 
-    height = abs(appearance.box[3] - appearance.box[1])
     logo = _logo_content(appearance.logo) if appearance.logo else None
-    # Chừa bên trái đúng một ô vuông bằng chiều cao khung để đặt logo.
-    text_left = int(height) + 4 if logo else 6
+    text_left = _text_left(appearance)
+    _, ts_format = _layout_budget(appearance)
 
-    return TextStampStyle(
+    return CheckMarkStampStyle(
         stamp_text="\n".join(lines),
         text_box_style=box_style,
         border_width=1 if appearance.show_border else 0,
@@ -303,33 +406,41 @@ def _stamp_style(
             margins=Margins(left=text_left, right=3, top=2, bottom=2),
             inner_content_scaling=InnerScaling.SHRINK_TO_FIT,
         ),
-        # %z cho ra +0700, đúng kiểu Adobe hiển thị trên chữ ký VN
-        timestamp_format="%d/%m/%Y %H:%M:%S %z",
+        check_mark=appearance.check_mark,
+        timestamp_format=ts_format,
     )
 
 
 def _appearance_lines(
     cert: asn1_x509.Certificate, appearance: SignatureAppearance
 ) -> tuple[list[str], dict[str, str]]:
-    """Nhãn song ngữ giống chữ ký của các CA công cộng VN."""
-    params: dict[str, str] = {"cn": subject_cn(cert)}
-    lines = ["Digitally signed by/Ký bởi: %(cn)s"]
+    """Nhãn song ngữ giống chữ ký của các CA công cộng VN.
+
+    Tên tổ chức trong chứng thư VN thường dài hơn ô ký, nên cắt dòng theo bề
+    rộng khung thay vì để một dòng dài rồi bị co nhỏ đến mức không đọc nổi.
+    """
+    max_chars, ts_format = _layout_budget(appearance)
+
+    def wrap(text: str) -> list[str]:
+        # "%" phải nhân đôi: chuỗi này còn đi qua phép nội suy của pyHanko.
+        return [
+            line.replace("%", "%%")
+            for line in textwrap.wrap(text, max_chars, break_long_words=True)
+        ] or [""]
+
+    lines = wrap(f"Digitally signed by/Ký bởi: {subject_cn(cert)}")
 
     mst = subject_tax_code(cert)
     if mst:
-        params["mst"] = mst
-        lines.append("Tax code/MST: %(mst)s")
+        lines += wrap(f"Tax code/MST: {mst}")
 
-    lines.append("Signing date/Ngày ký: %(ts)s")
-
-    if appearance.reason:
-        params["reason"] = appearance.reason
-        lines.append("Reason/Lý do: %(reason)s")
-    if appearance.location:
-        params["location"] = appearance.location
-        lines.append("Location/Nơi ký: %(location)s")
-
-    return lines, params
+    date_label = "Signing date/Ngày ký:"
+    ts_size = dict(_TIMESTAMP_FORMATS)[ts_format]
+    if len(date_label) + 1 + ts_size <= max_chars:
+        lines.append(f"{date_label} %(ts)s")
+    else:  # khung quá hẹp: nhãn một dòng, ngày một dòng
+        lines += [date_label, "%(ts)s"]
+    return lines, {}
 
 
 def signature_algorithm(cert: asn1_x509.Certificate) -> SigAlgo:
@@ -458,8 +569,6 @@ async def prepare(
             field_name=field_name,
             md_algorithm=MD_ALGORITHM,
             subfilter=fields.SigSeedSubFilter.PADES,
-            reason=appearance.reason or None,
-            location=appearance.location or None,
             validation_context=signing_context,
             embed_validation_info=embed_revinfo,
             use_pades_lta=profile is SignatureProfile.B_LTA,

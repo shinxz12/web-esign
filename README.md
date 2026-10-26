@@ -1,8 +1,8 @@
 # Web Signer
 
-Ký số PDF bằng USB token qua trình duyệt: mở tài liệu, kéo một khung ở vị trí
-muốn ký, chọn chứng thư trên token, bấm ký. Kết quả là PDF có chữ ký PAdES mà
-Adobe Reader xác thực được.
+Ký số PDF bằng USB token qua trình duyệt: mở tài liệu, bấm chọn vị trí ký
+(ô ký cỡ chuẩn, kéo để chỉnh), chọn chứng thư trên token, bấm ký. Kết quả là
+PDF có chữ ký PAdES mà Adobe Reader xác thực được.
 
 Hỗ trợ ký nhiều người theo thứ tự, đóng dấu thời gian (TSA) và lưu trữ dài hạn
 (LTV): PAdES B-B / B-T / B-LT / B-LTA.
@@ -47,8 +47,33 @@ Cách đó đang hỏng dần:
 - Cert TLS cho domain trỏ về 127.0.0.1 phải nhúng private key vào installer.
 
 Ở đây agent **chủ động** mở WebSocket ra backend và giữ kết nối. Browser không
-bao giờ gọi vào máy người dùng → không dính cả ba vấn đề trên. Ghép cặp bằng mã
-6 số agent in ra.
+bao giờ gọi vào máy người dùng → không dính cả ba vấn đề trên.
+
+## Ghép trình duyệt với máy: cookie thiết bị
+
+Agent thuộc về **máy**, không thuộc tài khoản nào — đúng mô hình plugin mà
+người dùng VN đã quen. Ba bí mật, ba vai:
+
+| Giữ ở | Bí mật | Trả lời câu hỏi |
+|---|---|---|
+| `~/.websigner/agent.json` | `device_token` | tôi là máy nào |
+| thanh địa chỉ, 2 phút, một lần | `ticket` | vé đổi lấy cookie |
+| cookie `ws_device` | `browser_token` | trình duyệt này đã được máy đó xác nhận |
+
+Luồng: agent khởi động → `POST /api/devices` ghi danh máy → mở trình duyệt mặc
+định tới `/activate?t=<ticket>` → server set cookie `ws_device` → `GET
+/api/agents` trả thẳng agent và chứng thư của máy đó. Trang web không gõ gì.
+
+Trình duyệt khác (hoặc đã xoá cookie): bấm **Kích hoạt trình duyệt** trong cửa
+sổ agent — nó mở vé mới. Không dùng được đường đó thì còn **mã ghép cặp 6 số**
+làm dự phòng, nằm trong phần thu gọn ở bước 1.
+
+Thu hồi: nút “Quên máy này” trên web gỡ cookie của đúng trình duyệt đang dùng;
+xoá hẳn thiết bị trong `data/devices.json` thì mọi trình duyệt đã kích hoạt
+theo nó mất hiệu lực cùng lúc.
+
+Vì mọi trình duyệt đã kích hoạt đều dùng được token, **lớp chặn thật là hộp
+thoại xác nhận trên agent + PIN của token** — không phải mã ghép cặp.
 
 ## Luồng ký và phân quyền
 
@@ -80,17 +105,21 @@ mkdir -p data/samples && .venv/bin/python scripts/make_sample_pdf.py data/sample
 cd backend && WEBSIGNER_TSA_URL=http://127.0.0.1:8080/tsa \
   ../.venv/bin/python -m uvicorn app.main:app --port 8000
 
-# 5. Agent (cửa sổ khác)
-.venv/bin/python agent/agent.py --pfx data/certs/signer-a.pfx --password 123456
+# 5. Agent (cửa sổ khác) — mặc định agent trỏ về wss://web-signer.btngoc.io.vn,
+#    nên chạy local phải chỉ rõ --server
+.venv/bin/python agent/agent.py --server ws://127.0.0.1:8000/ws/agent \
+  --pfx data/certs/signer-a.pfx --password 123456
 ```
 
-Mở http://127.0.0.1:8000 → tải PDF lên → nhập mã ghép cặp agent in ra → chọn
-chứng thư → “Đặt chữ ký” rồi kéo khung trên trang → “Ký số”.
+Agent tự ghi danh máy rồi mở trình duyệt mặc định đúng một lần để nhận cookie
+thiết bị. Từ đó mở http://127.0.0.1:8000 ở bất kỳ tab nào là **tự thấy token
+đang cắm** — không nhập mã, không bấm “Kết nối”. Tải PDF lên → chọn chứng thư
+→ “Đặt chữ ký” rồi bấm vào chỗ muốn ký → “Ký số”.
 
 Ký một phát qua API để kiểm tra nhanh:
 
 ```bash
-./scripts/smoke.sh <mã-ghép-cặp> "Lý do ký"
+./scripts/smoke.sh <mã-ghép-cặp>
 ```
 
 Test:
@@ -104,6 +133,47 @@ Test:
 Nhóm `e2e` tự dựng môi trường riêng trong thư mục tạm: cấp CA mới, phát hành
 CRL, chạy TSA, chạy backend và agent thật, nạp USB token ảo SoftHSM2 — rồi ký,
 xác thực và thử phá. Không mock gì, không đụng vào `data/` của bạn.
+
+### Agent có giao diện (.exe cho người dùng cuối)
+
+`agent/gui.py` là cùng lõi với `agent.py`, khác ở chỗ mọi tuỳ chọn nằm trong
+cửa sổ và mỗi lần ký hiện hộp thoại xác nhận kèm tên tài liệu + hash.
+
+```bash
+.venv/bin/python agent/gui.py              # chạy từ mã nguồn
+.venv/bin/python agent/gui.py --autoconnect
+```
+
+Trong cửa sổ có: server (mặc định `wss://web-signer.btngoc.io.vn/ws/agent`,
+sửa được), nguồn khoá (USB token PKCS#11 · Windows Certificate Store · tệp
+PFX), nút **Dò driver** PKCS#11, nhãn token khi cắm nhiều thiết bị, PIN (tuỳ
+chọn nhớ lại), store CNG và lọc "chỉ khoá trên token", **Xem chứng thư**,
+**Kích hoạt trình duyệt**, và ô **Chạy khi khởi động máy**. Cấu hình lưu ở
+`~/.websigner/agent.json` (quyền 600) — PIN chỉ chạm đĩa khi tích "Nhớ PIN".
+
+Tự khởi động chạy trong phiên đăng nhập của người dùng, không phải service —
+service không đọc được token cắm ở phiên người dùng và không hiện được hộp
+thoại xác nhận:
+
+| Hệ | Nơi ghi |
+|---|---|
+| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\WebSignerAgent` |
+| macOS | `~/Library/LaunchAgents/vn.websigner.agent.plist` |
+| Linux | `~/.config/autostart/websigner-agent.desktop` |
+
+Đóng gói một tệp chạy thẳng (PyInstaller không cross-build — muốn `.exe` thì
+phải build **trên Windows**):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1   # -> dist\WebSignerAgent.exe
+```
+
+```bash
+.venv/bin/python -m PyInstaller --noconfirm scripts/websigner-agent.spec
+```
+
+Nên ký `signtool` lên `.exe` bằng chứng thư code signing, nếu không SmartScreen
+sẽ chặn ở máy khách (lệnh mẫu ở cuối `scripts/build-agent.ps1`).
 
 ### Ký bằng USB token thật (Windows)
 
@@ -179,6 +249,23 @@ export SOFTHSM2_CONF=$PWD/data/softhsm/softhsm2.conf
   --token-label TOKEN-RSA --pin 123456
 ```
 
+## Hình chữ ký
+
+Theo mẫu quen thuộc của chữ ký số VN: logo/con dấu bên trái, chữ song ngữ bên
+phải, dấu tích xanh lá **chìm** phía dưới phần chữ.
+
+- Ô ký có **cỡ cố định** chọn từ giao diện (140×76, 165×90, 190×104, 220×120
+  pt; mặc định 165×90) — đặt bằng một cú bấm, kéo để chỉnh vị trí. Kéo tự do
+  cho ra ô méo, chữ bị co giãn mỗi lần một khác.
+- Ba dòng: `Ký bởi` (CN chứng thư), `MST` (nếu chứng thư có OU `MST:…`) và
+  `Ngày ký`. Không còn lý do/nơi ký: chúng cũng không được ghi vào `/Reason`
+  `/Location` nữa, nên bảng thuộc tính của Adobe cũng sạch theo.
+- Dòng nào dài hơn bề rộng ô thì **tự xuống dòng** — tên tổ chức, và cả ngày
+  ký khi ô hẹp. Chỉ khi ô hẹp tới mức một mình ngày cũng không vừa thì định
+  dạng mới rút gọn dần (`%d/%m/%Y %H:%M:%S %z` → `%d/%m/%Y`).
+- Dấu tích vẽ bằng nét vector, độ mờ 38%, nằm **dưới** chữ nên không che nội
+  dung; tắt được bằng ô “Dấu tích chìm”.
+
 ## Thuật toán ký
 
 Server chọn theo khoá công khai trong chứng thư rồi **gửi kèm tham số** cho
@@ -205,14 +292,18 @@ Hai điểm dễ sai, đã xử lý:
 | `backend/app/signing.py` | lõi hai pha: `prepare` (băm) / `finalize` (CMS, TSA, DSS) |
 | `backend/app/verify.py` | xác thực chữ ký, LTV, phân tích thay đổi sau khi ký |
 | `backend/app/trust.py` | trust anchor và ngữ cảnh kiểm tra thu hồi |
-| `backend/app/relay.py` | hub WebSocket, ghép cặp agent bằng mã 6 số |
+| `backend/app/relay.py` | hub WebSocket, tìm agent theo thiết bị hoặc mã 6 số |
 | `backend/app/store.py` | tài liệu theo revision, luồng ký, quyền sở hữu |
 | `backend/app/main.py` | HTTP API + phục vụ giao diện |
+| `backend/app/devices.py` | thiết bị đã cài agent + trình duyệt đã kích hoạt |
 | `agent/keysource.py` | giao kèo chung cho mọi nguồn khoá |
-| `agent/agent.py` | client relay, nguồn khoá PKCS#11 / PFX |
+| `agent/agent.py` | client relay (CLI), nguồn khoá PKCS#11 / PFX |
+| `agent/gui.py` | cửa sổ agent cho người dùng cuối, đóng gói thành .exe |
+| `agent/config.py` | `~/.websigner/agent.json`: danh tính máy + tuỳ chọn |
+| `agent/autostart.py` | chạy cùng hệ điều hành (Run key / LaunchAgent / XDG) |
 | `agent/cng.py` | nguồn khoá Windows Certificate Store (CNG + CSP) |
-| `web/` | viewer pdf.js, kéo khung chữ ký, panel xác thực |
-| `scripts/` | chứng thư test, PDF mẫu, TSA test, token SoftHSM2, agent Windows |
+| `web/` | viewer pdf.js cuộn liên tục, đặt ô ký, panel xác thực |
+| `scripts/` | chứng thư test, PDF mẫu, TSA test, SoftHSM2, build .exe |
 | `tests/` | bất biến + e2e (tự dựng CA, CRL, TSA, backend, agent, token ảo) |
 | `Dockerfile` | ảnh triển khai backend + giao diện |
 
@@ -226,6 +317,8 @@ Hai điểm dễ sai, đã xử lý:
 | `WEBSIGNER_PROFILE` | `B-LT` nếu có TSA, nếu không `B-B` | `B-B`/`B-T`/`B-LT`/`B-LTA` |
 | `WEBSIGNER_PREFER_PSS` | tắt | dùng RSA-PSS thay PKCS#1 v1.5 |
 | `WEBSIGNER_FONT` | tự dò | font TTF cho hình chữ ký (cần glyph tiếng Việt) |
+| `WEBSIGNER_PUBLIC_URL` | suy từ request | gốc URL đặt vào liên kết kích hoạt thiết bị |
+| `WEBSIGNER_AGENT_HOME` | `~/.websigner` | thư mục cấu hình phía agent |
 
 Hai cái bẫy đã gặp, ghi lại để đừng vấp lại:
 

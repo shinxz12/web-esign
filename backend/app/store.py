@@ -15,7 +15,7 @@ import pathlib
 import secrets
 import shutil
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from typing import Any
 
@@ -80,8 +80,7 @@ class SignatureRecord:
     tax_code: str | None
     signed_at: str
     page: int
-    reason: str | None
-    location: str | None
+    # meta.json cũ còn reason/location; _known() loại chúng khi nạp.
     # meta.json ghi trước khi có TSA/LTV không có trường này — chúng đúng là B-B
     profile: str = "B-B"
 
@@ -181,11 +180,22 @@ def _write_meta(path: pathlib.Path, meta: DocumentMeta) -> None:
     tmp.replace(path / "meta.json")
 
 
+def _known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Lọc bỏ khoá lạ — meta.json cũ còn trường đã bỏ (reason, location)."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
+
+
 def load_meta(doc_id: str) -> DocumentMeta:
     raw = json.loads((_doc_dir(doc_id) / "meta.json").read_text(encoding="utf-8"))
-    signers = [SignerSlot(**s) for s in raw.pop("signers", [])]
-    signatures = [SignatureRecord(**s) for s in raw.pop("signatures", [])]
-    return DocumentMeta(**raw, signers=signers, signatures=signatures)
+    signers = [SignerSlot(**_known(SignerSlot, s)) for s in raw.pop("signers", [])]
+    signatures = [
+        SignatureRecord(**_known(SignatureRecord, s))
+        for s in raw.pop("signatures", [])
+    ]
+    return DocumentMeta(
+        **_known(DocumentMeta, raw), signers=signers, signatures=signatures
+    )
 
 
 def save_meta(meta: DocumentMeta) -> None:

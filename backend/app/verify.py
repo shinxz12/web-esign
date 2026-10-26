@@ -33,8 +33,6 @@ class SignatureReport:
     tax_code: str | None
     issuer: str
     signed_at: str | None
-    reason: str | None
-    location: str | None
     intact: bool  # nội dung được ký không bị sửa
     trusted: bool  # chuỗi chứng thư về tới trust anchor
     covers_whole_document: bool
@@ -177,8 +175,6 @@ async def verify(
                     cert.issuer.native.get("common_name") or cert.issuer.human_friendly
                 ),
                 signed_at=signed_dt.isoformat() if signed_dt else None,
-                reason=embedded.sig_object.get("/Reason"),
-                location=embedded.sig_object.get("/Location"),
                 intact=bool(status.intact),
                 trusted=bool(trusted),
                 covers_whole_document=benign,

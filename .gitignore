@@ -5,3 +5,7 @@ __pycache__/
 # Dữ liệu chạy: tài liệu người dùng, khoá test, cache font
 data/
 .pytest_cache/
+
+# Bản đóng gói agent (PyInstaller)
+dist/
+build/

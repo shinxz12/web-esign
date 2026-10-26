@@ -90,7 +90,13 @@ class Client:
         try:
             with self._opener.open(req, timeout=120) as response:
                 raw = response.read()
-                return response.status, (json.loads(raw) if raw else None)
+                if not raw:
+                    return response.status, None
+                try:
+                    return response.status, json.loads(raw)
+                except json.JSONDecodeError:
+                    # /activate chuyển hướng về trang HTML — vẫn là 200 hợp lệ.
+                    return response.status, raw.decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             try:
@@ -278,6 +284,11 @@ class Lab:
                     "--code",
                     code,
                     "--auto-approve",
+                    # Danh tính máy nằm trong thư mục tạm của lab, và không
+                    # được phép bật trình duyệt thật lên giữa lúc chạy test.
+                    "--device-file",
+                    str(self.data / f"device-{code}.json"),
+                    "--no-activate",
                     *args,
                 ],
                 self._env(**(env or {})),
@@ -329,7 +340,7 @@ def first_cert(client: Client, code: str) -> str:
     return data["certificates"][0]["id"]
 
 
-def sign(client: Client, path: str, code: str, box=BOX_LEFT, reason="Thử nghiệm"):
+def sign(client: Client, path: str, code: str, box=BOX_LEFT):
     """Ký qua `path` (đường chủ sở hữu hoặc đường liên kết mời)."""
     return client.post(
         f"{path}/sign",
@@ -338,7 +349,6 @@ def sign(client: Client, path: str, code: str, box=BOX_LEFT, reason="Thử nghi�
             "cert_id": first_cert(client, code),
             "page": 1,
             "box": box,
-            "reason": reason,
         },
     )
 

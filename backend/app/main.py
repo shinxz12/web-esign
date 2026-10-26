@@ -31,11 +31,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import signing, store, trust, verify
+from . import devices, signing, store, trust, verify
 from .relay import AgentError, AgentSession, AgentUnavailable, hub
 
 # uvicorn chỉ cấu hình logger của nó; root logger không có handler nên log của
@@ -48,6 +48,7 @@ logger = logging.getLogger("websigner")
 
 WEB_DIR = pathlib.Path(__file__).resolve().parents[2] / "web"
 OWNER_COOKIE = "ws_owner"
+DEVICE_COOKIE = "ws_device"
 DOC_ID = Path(pattern="^[0-9a-f]{16}$")
 
 app = FastAPI(title="Web Signer", version="0.2.0")
@@ -77,6 +78,8 @@ async def attach_owner_token(request: Request, call_next):
     token = request.cookies.get(OWNER_COOKIE)
     fresh = not token
     request.state.owner_token = token or secrets.token_urlsafe(24)
+    # Cookie thiết bị chỉ do /activate cấp, middleware không tự sinh.
+    request.state.device_token = request.cookies.get(DEVICE_COOKIE)
     response = await call_next(request)
     if fresh:
         response.set_cookie(
@@ -90,6 +93,14 @@ async def attach_owner_token(request: Request, call_next):
     return response
 
 
+def device_token(request: Request) -> str | None:
+    return request.state.device_token
+
+
+def current_device(request: Request) -> devices.Device | None:
+    return devices.browser_device(request.state.device_token)
+
+
 def owner_token(request: Request) -> str:
     return request.state.owner_token
 
@@ -100,12 +111,13 @@ def owner_token(request: Request) -> str:
 
 
 class SignRequest(BaseModel):
-    agent_code: str = Field(min_length=4, max_length=16)
+    # Bỏ trống khi trình duyệt đã kích hoạt cookie thiết bị: server tự tìm
+    # agent của máy đó. Mã ghép cặp chỉ còn là đường dự phòng.
+    agent_code: str | None = Field(default=None, min_length=4, max_length=16)
     cert_id: str
     page: int = Field(ge=0)
     box: tuple[float, float, float, float]
-    reason: str | None = None
-    location: str | None = None
+    check_mark: bool = True
     color: str = signing.DEFAULT_STAMP_COLOR
     show_border: bool = False
     use_logo: bool = True
@@ -114,6 +126,18 @@ class SignRequest(BaseModel):
 class SignerInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     tax_code: str | None = Field(default=None, max_length=20)
+
+
+class DeviceRegistration(BaseModel):
+    """Agent tự ghi danh máy khi khởi động."""
+
+    token: str = Field(min_length=20, max_length=200)
+    name: str = Field(default="agent", max_length=120)
+    platform: str = Field(default="?", max_length=60)
+
+
+class DeviceToken(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
 
 
 # --------------------------------------------------------------------------
@@ -202,6 +226,7 @@ def api_delete(doc_id: str = DOC_ID, owner: str = Depends(owner_token)) -> Respo
 
 @app.post("/api/documents/{doc_id}/sign")
 async def api_sign_as_owner(
+    http: Request,
     doc_id: str = DOC_ID,
     request: SignRequest = Body(...),
     owner: str = Depends(owner_token),
@@ -212,9 +237,12 @@ async def api_sign_as_owner(
             409,
             "Tài liệu dùng luồng ký có thứ tự — hãy ký qua liên kết của người ký",
         )
-    return (await _perform_signing(meta, request, slot=None, logo_key=owner)).to_dict(
-        redact_invites=False
-    )
+    session = _agent_session(http, request)
+    return (
+        await _perform_signing(
+            meta, request, slot=None, logo_key=owner, session=session
+        )
+    ).to_dict(redact_invites=False)
 
 
 # --------------------------------------------------------------------------
@@ -255,7 +283,9 @@ async def api_invite_verify(invite: str):
 
 
 @app.post("/api/sign/{invite}/sign")
-async def api_invite_sign(invite: str, request: SignRequest = Body(...)) -> dict:
+async def api_invite_sign(
+    http: Request, invite: str, request: SignRequest = Body(...)
+) -> dict:
     meta, slot = _invited(invite)
     if slot.done:
         raise HTTPException(409, "Bạn đã ký tài liệu này rồi")
@@ -264,8 +294,11 @@ async def api_invite_sign(invite: str, request: SignRequest = Body(...)) -> dict
         raise HTTPException(
             409, f"Chưa tới lượt bạn — đang chờ {nxt.name if nxt else '—'} ký"
         )
+    session = _agent_session(http, request)
     return (
-        await _perform_signing(meta, request, slot=slot, logo_key=invite)
+        await _perform_signing(
+            meta, request, slot=slot, logo_key=invite, session=session
+        )
     ).to_dict()
 
 
@@ -303,6 +336,26 @@ def api_has_logo(owner: str = Depends(owner_token)) -> dict:
     return {"has_logo": store.load_logo(owner) is not None}
 
 
+def _logo_response(key: str) -> Response:
+    """Ảnh thô cho phần xem trước hình chữ ký trên trình duyệt."""
+    from PIL import Image
+
+    data = store.load_logo(key)
+    if data is None:
+        raise HTTPException(404, "Chưa có logo")
+    fmt = Image.open(io.BytesIO(data)).format
+    return Response(
+        data,
+        media_type=Image.MIME.get(fmt, "application/octet-stream"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/logo/image")
+def api_logo_image(owner: str = Depends(owner_token)) -> Response:
+    return _logo_response(owner)
+
+
 @app.post("/api/sign/{invite}/logo")
 async def api_upload_invite_logo(invite: str, file: UploadFile = File(...)) -> dict:
     _invited(invite)
@@ -313,6 +366,12 @@ async def api_upload_invite_logo(invite: str, file: UploadFile = File(...)) -> d
 def api_has_invite_logo(invite: str) -> dict:
     _invited(invite)
     return {"has_logo": store.load_logo(invite) is not None}
+
+
+@app.get("/api/sign/{invite}/logo/image")
+def api_invite_logo_image(invite: str) -> Response:
+    _invited(invite)
+    return _logo_response(invite)
 
 
 @app.delete("/api/sign/{invite}/logo", status_code=204)
@@ -327,17 +386,29 @@ def api_delete_invite_logo(invite: str) -> Response:
 # --------------------------------------------------------------------------
 
 
+def _agent_session(http: Request, request: SignRequest) -> AgentSession:
+    """Agent nào sẽ ký: ưu tiên mã người dùng gõ, sau đó tới cookie thiết bị."""
+    try:
+        if request.agent_code:
+            return hub.get(request.agent_code)
+        device = current_device(http)
+        if device is None:
+            raise AgentUnavailable(
+                "Trình duyệt này chưa gắn với máy nào. Mở agent trên máy có "
+                "token để kích hoạt, hoặc nhập mã ghép cặp."
+            )
+        return hub.for_device(device.id)
+    except AgentUnavailable as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 async def _perform_signing(
     meta: store.DocumentMeta,
     request: SignRequest,
     slot: store.SignerSlot | None,
     logo_key: str,
+    session: AgentSession,
 ) -> store.DocumentMeta:
-    try:
-        session = hub.get(request.agent_code)
-    except AgentUnavailable as exc:
-        raise HTTPException(404, str(exc)) from exc
-
     cert_entry = session.certificates.get(request.cert_id)
     if cert_entry is None:
         raise HTTPException(
@@ -362,8 +433,7 @@ async def _perform_signing(
     appearance = signing.SignatureAppearance(
         page=request.page,
         box=request.box,
-        reason=request.reason or None,
-        location=request.location or None,
+        check_mark=request.check_mark,
         logo=store.load_logo(logo_key) if request.use_logo else None,
         color=request.color,
         show_border=request.show_border,
@@ -414,8 +484,6 @@ async def _perform_signing(
         tax_code=cert_mst,
         signed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         page=request.page,
-        reason=request.reason,
-        location=request.location,
         profile=profile.value,
     )
     return store.commit_signature(meta.id, signed_pdf, record, slot)
@@ -439,26 +507,132 @@ async def _verify_report(doc_id: str) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
+async def _agent_certificates(session: AgentSession) -> list[dict]:
+    """Hỏi agent danh sách chứng thư và nhớ bản DER để browser không gửi lên."""
+    data = await session.call("list_certificates", {})
+    session.certificates = {c["id"]: c for c in data.get("certificates", [])}
+
+    def public(entry: dict) -> dict:
+        """Bỏ phần nặng, thêm MST để trang web xem trước đúng hình sẽ ký."""
+        cert = signing.load_cert_chain(base64.b64decode(entry["cert_b64"]), [])[0]
+        return {
+            **{k: v for k, v in entry.items() if k not in ("cert_b64", "chain_b64")},
+            "tax_code": signing.subject_tax_code(cert),
+        }
+
+    return [public(c) for c in session.certificates.values()]
+
+
 @app.get("/api/agents/{code}/certificates")
 async def api_certificates(code: str) -> dict:
-    """Hỏi agent xem token đang cắm có những chứng thư nào."""
+    """Đường dự phòng: tìm agent bằng mã ghép cặp người dùng gõ tay."""
     try:
         session = hub.get(code)
-        data = await session.call("list_certificates", {})
+        certificates = await _agent_certificates(session)
     except AgentUnavailable as exc:
         raise HTTPException(404, str(exc)) from exc
     except AgentError as exc:
         raise HTTPException(502, str(exc)) from exc
 
-    session.certificates = {c["id"]: c for c in data.get("certificates", [])}
     return {
         "agent": session.name,
         "platform": session.platform,
-        "certificates": [
-            {k: v for k, v in c.items() if k not in ("cert_b64", "chain_b64")}
-            for c in session.certificates.values()
-        ],
+        "certificates": certificates,
     }
+
+
+# --------------------------------------------------------------------------
+# Thiết bị: agent ghi danh máy, trình duyệt kích hoạt một lần bằng cookie
+# --------------------------------------------------------------------------
+
+
+def _activation_url(request: Request, device_id: str) -> str:
+    """URL agent sẽ mở trong trình duyệt mặc định để cấp cookie thiết bị."""
+    base = os.environ.get("WEBSIGNER_PUBLIC_URL", "").rstrip("/") or str(
+        request.base_url
+    ).rstrip("/")
+    return f"{base}/activate?t={devices.issue_ticket(device_id)}"
+
+
+@app.post("/api/devices", status_code=201)
+def api_register_device(
+    http: Request, registration: DeviceRegistration = Body(...)
+) -> dict:
+    device = devices.register(
+        registration.token, registration.name, registration.platform
+    )
+    return {
+        "device": device.to_dict(),
+        "activate_url": _activation_url(http, device.id),
+    }
+
+
+@app.post("/api/devices/activation")
+def api_new_activation(http: Request, body: DeviceToken = Body(...)) -> dict:
+    """Agent xin vé mới để kích hoạt thêm một trình duyệt."""
+    try:
+        device = devices.by_token(body.token)
+    except devices.DeviceError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "device": device.to_dict(),
+        "activate_url": _activation_url(http, device.id),
+    }
+
+
+@app.get("/activate")
+def api_activate(http: Request, t: str = "") -> Response:
+    """Đổi vé một lần lấy cookie thiết bị rồi trả người dùng về trang ký."""
+    try:
+        device_id = devices.claim_ticket(t)
+    except devices.DeviceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    browser = http.state.device_token or secrets.token_urlsafe(24)
+    devices.bind_browser(browser, device_id)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        DEVICE_COOKIE,
+        browser,
+        httponly=True,
+        samesite="lax",
+        secure=http.url.scheme == "https",
+        max_age=365 * 24 * 3600,
+        path="/",
+    )
+    logger.info("Trình duyệt mới kích hoạt cho thiết bị %s", device_id)
+    return response
+
+
+@app.get("/api/agents")
+async def api_device_agent(http: Request) -> dict:
+    """Agent của máy mà trình duyệt này đã kích hoạt — không cần gõ mã."""
+    device = current_device(http)
+    if device is None:
+        return {"device": None, "online": False, "certificates": []}
+    try:
+        session = hub.for_device(device.id)
+        certificates = await _agent_certificates(session)
+    except AgentUnavailable:
+        return {"device": device.to_dict(), "online": False, "certificates": []}
+    except AgentError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {
+        "device": device.to_dict(),
+        "online": True,
+        "agent": session.name,
+        "platform": session.platform,
+        "certificates": certificates,
+    }
+
+
+@app.delete("/api/devices/browser", status_code=204)
+def api_forget_browser(http: Request) -> Response:
+    """Quên liên kết với máy này trên đúng trình duyệt đang dùng."""
+    devices.unbind_browser(http.state.device_token)
+    response = Response(status_code=204)
+    response.delete_cookie(DEVICE_COOKIE, path="/")
+    return response
 
 
 @app.websocket("/ws/agent")
@@ -470,14 +644,32 @@ async def ws_agent(websocket: WebSocket) -> None:
         if hello.get("type") != "hello" or not hello.get("code"):
             await websocket.close(code=4400, reason="Thiếu gói hello")
             return
+
+        # Agent nào đã ghi danh máy thì kèm device_token; agent cũ thì không,
+        # và vẫn dùng được qua mã ghép cặp.
+        device_id: str | None = None
+        if hello.get("device_token"):
+            try:
+                device_id = devices.by_token(str(hello["device_token"])).id
+                devices.touch(device_id)
+            except devices.DeviceError as exc:
+                await websocket.close(code=4401, reason=str(exc))
+                return
+
         session = AgentSession(
             code=str(hello["code"]),
             name=str(hello.get("name") or "agent"),
             platform=str(hello.get("platform") or "?"),
             websocket=websocket,
+            device_id=device_id,
         )
         hub.register(session)
-        logger.info("Agent %s (%s) đã kết nối", session.name, session.code)
+        logger.info(
+            "Agent %s (mã %s, thiết bị %s) đã kết nối",
+            session.name,
+            session.code,
+            device_id or "—",
+        )
         await websocket.send_json({"type": "ready"})
 
         while True:
@@ -486,7 +678,7 @@ async def ws_agent(websocket: WebSocket) -> None:
         pass
     finally:
         if session is not None:
-            hub.unregister(session.code)
+            hub.unregister(session)
             logger.info("Agent %s đã ngắt", session.code)
 
 

@@ -3,3 +3,4 @@
 pytest>=8          # tests/test_invariants.py
 reportlab>=4       # sinh PDF hợp đồng mẫu (scripts/make_sample_pdf.py)
 pypdfium2>=4       # render PDF đã ký để đối chiếu bằng engine thứ hai
+pyinstaller>=6     # đóng gói agent thành .exe (scripts/websigner-agent.spec)
