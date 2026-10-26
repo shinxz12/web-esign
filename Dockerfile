@@ -43,4 +43,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD curl -fsS http://127.0.0.1:8000/api/session || exit 1
 
 WORKDIR /app/backend
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: sau reverse proxy (Traefik/Cloudflare) thì không có nó
+# request.url.scheme luôn là http -> liên kết kích hoạt thiết bị sai scheme và
+# cookie ws_device không được gắn cờ Secure.
+CMD ["python", "-m", "uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
