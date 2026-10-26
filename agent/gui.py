@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import autostart  # noqa: E402
 import config  # noqa: E402
+from tray import TrayIcon  # noqa: E402
 from agent import (  # noqa: E402
     Agent,
     build_source,
@@ -44,13 +45,15 @@ PAD = {"padx": 8, "pady": 4}
 
 
 class AgentWindow:
-    def __init__(self, root: tk.Tk, config_file: Path) -> None:
+    def __init__(
+        self, root: tk.Tk, config_file: Path, silent: bool = False
+    ) -> None:
         self.root = root
+        self.silent = silent
         self.config_file = config_file
         self.settings = config.load_settings(config_file)
         self.device_token = config.device_token(config_file)
         self.device: dict | None = None
-
         # Vòng lặp asyncio chạy ở luồng riêng; Tk vẫn giữ luồng chính.
         self.loop = asyncio.new_event_loop()
         self.worker: threading.Thread | None = None
@@ -61,7 +64,16 @@ class AgentWindow:
 
         root.title("Web Signer Agent")
         root.geometry("640x560")
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.protocol("WM_DELETE_WINDOW", self.on_window_close)
+
+        # Khay hệ thống (System Tray icon ở góc phải thanh tác vụ)
+        self.tray = TrayIcon(
+            tooltip="Web Signer Agent",
+            on_open=self.show_window,
+            on_quit=self.quit_app,
+        )
+        self.tray.start()
+
         self._build()
         self._pump()
 
@@ -239,15 +251,25 @@ class AgentWindow:
         self.root.after(120, self._pump)
 
     def _ask_dialog(self, request: dict) -> bool:
-        return messagebox.askyesno(
-            "Yêu cầu ký số",
-            "Một trang web đang xin chữ ký của bạn.\n\n"
-            f"Tài liệu: {request['document_name']}\n"
-            f"Hash tài liệu: {request['document_digest']}\n"
-            f"Thuật toán: {request['algo']}\n"
-            f"Dữ liệu ký: {request['tbs_bytes']} byte\n\n"
-            "Đồng ý ký?",
-        )
+        was_withdrawn = self.silent and str(self.root.state()) == "withdrawn"
+        if was_withdrawn:
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+        try:
+            return messagebox.askyesno(
+                "Yêu cầu ký số",
+                "Một trang web đang xin chữ ký của bạn.\n\n"
+                f"Tài liệu: {request['document_name']}\n"
+                f"Hash tài liệu: {request['document_digest']}\n"
+                f"Thuật toán: {request['algo']}\n"
+                f"Dữ liệu ký: {request['tbs_bytes']} byte\n\n"
+                "Đồng ý ký?",
+                parent=self.root,
+            )
+        finally:
+            if was_withdrawn:
+                self.root.attributes("-topmost", False)
+                self.root.withdraw()
 
     # --------------------------------------------------------------- tuỳ chọn
 
@@ -352,7 +374,10 @@ class AgentWindow:
         try:
             source = self.open_source(settings)
         except Exception as exc:
-            messagebox.showerror("Không mở được nguồn khoá", str(exc))
+            self.log(f"Không mở được nguồn khoá: {exc}")
+            self.status.configure(text=f"Lỗi: {exc}")
+            if not self.silent:
+                messagebox.showerror("Không mở được nguồn khoá", str(exc))
             return
 
         # Ghi danh máy trước: có device_id thì trình duyệt đã kích hoạt tự thấy
@@ -364,9 +389,7 @@ class AgentWindow:
             paired = True
             self.log(f"Máy đã ghi danh: {self.device['name']} ({self.device['id']})")
             if not config.browser_activated(self.config_file):
-                # Lần đầu: mở trình duyệt mặc định để nó nhận cookie thiết bị.
-                self.log(f"Mở trình duyệt để kích hoạt: {info['activate_url']}")
-                webbrowser.open(info["activate_url"])
+                self.log(f"Liên kết kích hoạt trình duyệt: {info['activate_url']}")
                 config.mark_browser_activated(self.config_file)
         except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
             self.log(f"Chưa ghi danh được máy ({exc}) — vẫn dùng được mã ghép cặp.")
@@ -448,7 +471,37 @@ class AgentWindow:
             task.cancel()
         await asyncio.gather(*rest, return_exceptions=True)
 
+    def show_window(self) -> None:
+        """Mở lại cửa sổ từ khay hệ thống (an toàn luồng Tk)."""
+        self.root.after(0, self._do_show_window)
+
+    def _do_show_window(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(80, lambda: self.root.attributes("-topmost", False))
+        self.root.focus_force()
+
+    def on_window_close(self) -> None:
+        """Bấm nút [X] ở góc cửa sổ: thu ẩn vào khay hệ thống thay vì tắt hẳn."""
+        self.save()
+        if self.tray and self.tray.is_alive():
+            self.root.withdraw()
+        else:
+            self.quit_app()
+
+    def quit_app(self) -> None:
+        """Thoát hoàn toàn khi bấm 'Thoát' ở menu chuột phải khay hệ thống."""
+        self.root.after(0, self._do_quit_app)
+
+    def _do_quit_app(self) -> None:
+        if self.tray:
+            self.tray.stop()
+        self.on_close()
+
     def on_close(self) -> None:
+        if self.tray:
+            self.tray.stop()
         self.save()
         self._stop_task()
         if self.worker is not None:
@@ -460,6 +513,25 @@ class AgentWindow:
             self.worker.join(timeout=2)
         self.root.destroy()
 
+def _acquire_mutex() -> object | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ERROR_ALREADY_EXISTS = 183
+        handle = ctypes.windll.kernel32.CreateMutexW(
+            None, wintypes.BOOL(False), "Local\\WebSignerAgent_SingleInstance_Mutex"
+        )
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+            return None
+        return handle
+    except Exception:
+        return None
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Web Signer Agent (giao diện)")
@@ -468,13 +540,34 @@ def main() -> int:
     )
     parser.add_argument(
         "--autoconnect",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="tự động kết nối ngay khi mở (mặc định bật)",
+    )
+    parser.add_argument(
+        "--silent",
         action="store_true",
-        help="kết nối ngay khi mở (dùng khi chạy cùng hệ điều hành)",
+        help="chạy ẩn hoàn toàn dưới nền (không hiện cửa sổ)",
+    )
+    parser.add_argument(
+        "--minimized",
+        action="store_true",
+        help="thu nhỏ cửa sổ xuống thanh tác vụ",
     )
     args = parser.parse_args()
 
+    mutex = _acquire_mutex()
+    if sys.platform == "win32" and mutex is None:
+        if args.silent:
+            return 0  # Đã có tiến trình khác đang chạy ngầm
+
     root = tk.Tk()
-    window = AgentWindow(root, Path(args.config))
+    if args.silent:
+        root.withdraw()
+    elif args.minimized:
+        root.iconify()
+
+    window = AgentWindow(root, Path(args.config), silent=args.silent)
     if args.autoconnect:
         root.after(200, window.connect)
     root.mainloop()

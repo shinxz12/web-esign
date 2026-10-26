@@ -27,6 +27,7 @@ analysis = Analysis(
         "pkcs11",
         "websockets",
         "tkinter",
+        "tray",
     ],
     hookspath=[],
     runtime_hooks=[],

@@ -397,6 +397,8 @@ h3 {
   flex-direction: column;
   justify-content: center;
   word-break: break-word;
+  line-height: 1.35;
+  gap: 2px;
 }
 .sig-grip {
   position: absolute;

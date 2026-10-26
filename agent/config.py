@@ -18,6 +18,7 @@ import json
 import os
 import secrets
 from pathlib import Path
+import sys
 from typing import Any
 
 # Mặc định trỏ thẳng hệ thống thật: người dùng cuối mở .exe lên là chạy, không
@@ -45,13 +46,13 @@ SETTING_KEYS = (
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "server": DEFAULT_SERVER,
-    "source": "pkcs11",
+    "source": "cng" if sys.platform == "win32" else "pkcs11",
     "pkcs11": "auto",
     "token_label": "",
     "pin": "",
     "save_pin": False,
     "cng_store": "MY",
-    "hardware_only": True,
+    "hardware_only": False,
     "pfx": "",
     "pfx_password": "",
     "auto_start": False,

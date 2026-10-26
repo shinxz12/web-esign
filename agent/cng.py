@@ -580,6 +580,21 @@ class WindowsCertStoreKeySource:
                     # Dựng CertEntry
                     try:
                         entry = CertEntry.build(cert_der, chain_der)
+                        cert = entry.cert
+                        # Chỉ nhận chứng thư dùng cho ký số (digitalSignature hoặc nonRepudiation)
+                        # Lọc bỏ các chứng thư hệ thống Windows (Windows Hello, TPM, Azure AD device...)
+                        try:
+                            from cryptography.x509.oid import ExtensionOID
+
+                            ku = cert.extensions.get_extension_for_oid(
+                                ExtensionOID.KEY_USAGE
+                            ).value
+                            if not (ku.digital_signature or ku.content_commitment):
+                                continue
+                        except Exception:
+                            # Không có Key Usage: chứng thư rác của hệ thống (GUID tự ký, TPM...)
+                            continue
+
                         entries.append(entry)
                     except Exception:
                         continue

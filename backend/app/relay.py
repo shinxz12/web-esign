@@ -95,7 +95,13 @@ class AgentHub:
         for future in session.pending.values():
             if not future.done():
                 future.set_exception(AgentError("Agent đã ngắt kết nối"))
-
+        if session.websocket is not None:
+            try:
+                asyncio.create_task(
+                    session.websocket.close(code=4409, reason="Phiên mới thay thế")
+                )
+            except Exception:
+                pass
     def get(self, code: str) -> AgentSession:
         session = self._by_code.get(code)
         if session is None:

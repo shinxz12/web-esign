@@ -331,6 +331,9 @@ class _CheckMarkStamp(TextStamp):
 # Cỡ chữ trên hình chữ ký. 7pt là cỡ các CA công cộng VN hay dùng: đọc được
 # khi in, mà ô ký chuẩn 180–280pt vẫn chứa đủ ba dòng.
 STAMP_FONT_SIZE = 7
+# Khoảng cách giữa các dòng (baseline-to-baseline). Mặc định pyHanko để bằng cỡ
+# chữ (7pt) nên chữ bị dính sát nhau; 9.5pt (~1.35x) cho dòng thoáng và dễ đọc.
+STAMP_LEADING = 9.5
 
 # Bề rộng trung bình một ký tự so với cỡ chữ. Dùng để ước lượng chỗ xuống dòng
 # — không cần chính xác vì SHRINK_TO_FIT vẫn co lại nếu hụt.
@@ -378,10 +381,15 @@ def _stamp_style(
         box_style = TextBoxStyle(
             font=GlyphAccumulatorFactory(font_path, font_size=font_size),
             font_size=font_size,
+            leading=STAMP_LEADING,
             text_color=color,
         )
     else:  # font chuẩn PDF, không có dấu tiếng Việt
-        box_style = TextBoxStyle(font_size=font_size, text_color=color)
+        box_style = TextBoxStyle(
+            font_size=font_size,
+            leading=STAMP_LEADING,
+            text_color=color,
+        )
 
     logo = _logo_content(appearance.logo) if appearance.logo else None
     text_left = _text_left(appearance)

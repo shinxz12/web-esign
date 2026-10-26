@@ -166,6 +166,7 @@ phải build **trên Windows**):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1   # -> dist\WebSignerAgent.exe
+powershell -ExecutionPolicy Bypass -File scripts\install-agent.ps1 # cài vào máy + tạo shortcut + tự khởi động
 ```
 
 ```bash

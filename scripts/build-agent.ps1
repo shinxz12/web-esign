@@ -1,4 +1,4 @@
-# Đóng gói agent thành dist\WebSignerAgent.exe
+﻿# Đóng gói agent thành dist\WebSignerAgent.exe
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1
 #
@@ -9,15 +9,33 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$python = Join-Path $root ".venv\Scripts\python.exe"
-if (-not (Test-Path $python)) {
-    Write-Host "Chưa có .venv — tạo mới…"
-    py -3.12 -m venv .venv
-    $python = Join-Path $root ".venv\Scripts\python.exe"
-    & $python -m pip install --upgrade pip
-    & $python -m pip install -r requirements-dev.txt
+function Resolve-Python {
+    foreach ($candidate in @("py", "python", "python3")) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    throw "Chưa có Python. Cài Python 3.10+ từ https://www.python.org/downloads/ rồi chạy lại."
 }
 
+$python = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    $agentPy = Join-Path $root ".venv-agent\Scripts\python.exe"
+    if (Test-Path $agentPy) {
+        $python = $agentPy
+    } else {
+        Write-Host "Chưa có .venv — tạo mới…"
+        & (Resolve-Python) -m venv (Join-Path $root ".venv")
+        $python = Join-Path $root ".venv\Scripts\python.exe"
+        & $python -m pip install --upgrade pip
+        & $python -m pip install -r requirements-dev.txt
+    }
+}
+
+& $python -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Cài đặt PyInstaller…"
+    & $python -m pip install pyinstaller
+}
 # python-pkcs11 chỉ cần khi ký bằng USB token thật; thiếu nó thì bản đóng gói
 # chạy được nhưng không mở được token, nên kiểm tra sớm.
 & $python -c "import pkcs11" 2>$null

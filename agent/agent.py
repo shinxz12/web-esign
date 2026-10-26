@@ -76,7 +76,10 @@ def _post_json(url: str, payload: dict, timeout: float = 10.0) -> dict:
         url,
         data=json.dumps(payload).encode(),
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "WebSignerAgent/1.0",
+        },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
@@ -521,6 +524,14 @@ def build_source(args: argparse.Namespace) -> KeySource:
         if driver == "auto":
             found = discover_pkcs11()
             if not found:
+                if sys.platform == "win32":
+                    import cng
+
+                    if cng.is_available():
+                        return cng.WindowsCertStoreKeySource(
+                            store_name=getattr(args, "cng_store", "MY"),
+                            hardware_only=getattr(args, "hardware_only", True),
+                        )
                 raise KeySourceError(
                     "Không tìm thấy thư viện PKCS#11 nào đã cài. "
                     "Cài phần mềm ký của CA rồi thử lại, hoặc chỉ đúng đường dẫn."

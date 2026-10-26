@@ -36,11 +36,12 @@ def command() -> list[str]:
     nhập xong là token sẵn sàng, không phải bấm gì.
     """
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--autoconnect"]
+        return [sys.executable, "--autoconnect", "--silent"]
     return [
         sys.executable,
         str(Path(__file__).resolve().parent / "gui.py"),
         "--autoconnect",
+        "--silent",
     ]
 
 
