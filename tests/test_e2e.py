@@ -300,6 +300,40 @@ def test_nhieu_token_cung_luc_ky_dung_token(lab, owner, pdf):
     assert reports[0]["intact"] and reports[0]["trusted"]
 
 
+def test_logo_va_mau_duoc_ve_vao_hinh_chu_ky(owner, lab, pdf):
+    """Hình chữ ký theo mẫu VN: logo bên trái, chữ song ngữ có màu bên phải."""
+    import io as _io
+
+    from PIL import Image, ImageDraw
+
+    buf = _io.BytesIO()
+    image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    ImageDraw.Draw(image).ellipse((4, 4, 124, 124), outline=(200, 20, 20, 255), width=8)
+    image.save(buf, format="PNG")
+
+    status, info = owner.request("POST", "/api/logo", upload=buf.getvalue())
+    assert status == 200, info
+    assert info["format"] == "PNG"
+
+    doc_id = upload(owner, pdf)
+    status, body = owner.post(
+        f"/api/documents/{doc_id}/sign",
+        body={
+            "agent_code": "111111",
+            "cert_id": first_cert(owner, "111111"),
+            "page": 1,
+            "box": [65, 390, 330, 460],
+            "reason": "Phê duyệt",
+            "color": "do",
+            "use_logo": True,
+        },
+    )
+    assert status == 200, body
+
+    signed = owner.download(f"/api/documents/{doc_id}/download")
+    assert _appearance_has_image(signed), "logo không được nhúng vào hình chữ ký"
+
+
 def test_rsa_pss_dung_salt_cua_server(lab, pdf):
     backend = lab.start_backend("backend-pss", WEBSIGNER_PREFER_PSS="1")
     lab.agent_with_pfx("777777", "signer-a.pfx", backend=backend)
@@ -370,3 +404,36 @@ def _has_document_timestamp(signed: bytes) -> bool:
         embedded.sig_object.get("/Type") == "/DocTimeStamp"
         for embedded in _reader(signed).embedded_signatures
     )
+
+
+def _appearance_has_image(signed: bytes) -> bool:
+    """Hình chữ ký có nhúng XObject ảnh (logo) hay không."""
+    reader = _reader(signed)
+
+    def deref(obj):
+        return reader.get_object(obj.reference) if hasattr(obj, "reference") else obj
+
+    def images_in(resources) -> bool:
+        xobjects = deref(resources).get("/XObject")
+        if xobjects is None:
+            return False
+        for entry in deref(xobjects).values():
+            stream = deref(entry)
+            if stream.get("/Subtype") == "/Image":
+                return True
+            nested = stream.get("/Resources")
+            if nested is not None and images_in(nested):
+                return True
+        return False
+
+    for embedded in reader.embedded_signatures:
+        appearances = embedded.sig_field.get("/AP")
+        if appearances is None:
+            continue
+        normal = deref(appearances).get("/N")
+        if normal is None:
+            continue
+        resources = deref(normal).get("/Resources")
+        if resources is not None and images_in(resources):
+            return True
+    return False

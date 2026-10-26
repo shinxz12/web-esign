@@ -5,12 +5,19 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     WEBSIGNER_DATA=/data \
     WEBSIGNER_TRUST_DIR=/data/trust \
-    WEBSIGNER_FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+    WEBSIGNER_FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+    TZ=Asia/Ho_Chi_Minh
 
 # DejaVu có đủ glyph tiếng Việt cho hình chữ ký. Font 2048 upem nên sẽ được
 # scale về 1000 upem lần chạy đầu rồi cache lại trong /data/.fontcache.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core curl \
+# tzdata: thiếu nó thì giờ ký trên hình chữ ký hiện +0000 thay vì +07.
+# DEBIAN_FRONTEND: thiếu nó thì tzdata bật hộp thoại chọn vùng giờ và
+# apt-get đứng im vĩnh viễn trong lúc build.
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      fonts-dejavu-core curl tzdata \
+ && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+ && echo "$TZ" > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

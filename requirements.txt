@@ -1,5 +1,6 @@
 # Backend
-pyhanko[opentype]>=0.38,<0.39
+# image-support kéo theo Pillow: cần để vẽ logo/con dấu vào hình chữ ký
+pyhanko[opentype,image-support]>=0.38,<0.39
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9

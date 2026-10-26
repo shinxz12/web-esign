@@ -143,6 +143,21 @@ def normalize_upem(font_path: str) -> str:
         return str(source)
 
     scale_upem(font, 1000)
+
+    # Bytecode hinting được viết cho unitsPerEm cũ. Giữ lại thì ở cỡ chữ nhỏ
+    # nó bóp méo theo lưới sai và nuốt mất các nét nhỏ — dấu chấm trên chữ
+    # "i" và nửa trên của dấu ":" biến mất. Bỏ hinting, dùng outline thô.
+    for table in ("fpgm", "prep", "cvt ", "gasp"):
+        if table in font:
+            del font[table]
+    if "glyf" in font:
+        glyf = font["glyf"]
+        for name in glyf.keys():
+            glyph = glyf[name]
+            # Xoá hẳn thuộc tính thì fontTools không biên dịch lại được;
+            # phải giữ nguyên và gán bytecode rỗng.
+            if hasattr(glyph, "program"):
+                glyph.program.fromBytecode(b"")
     FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = cached.with_suffix(".tmp")
     font.save(str(tmp))
