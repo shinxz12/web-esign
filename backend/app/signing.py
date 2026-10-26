@@ -331,9 +331,9 @@ class _CheckMarkStamp(TextStamp):
 # Cỡ chữ trên hình chữ ký. 7pt là cỡ các CA công cộng VN hay dùng: đọc được
 # khi in, mà ô ký chuẩn 180–280pt vẫn chứa đủ ba dòng.
 STAMP_FONT_SIZE = 7
-# Khoảng cách giữa các dòng (baseline-to-baseline). Mặc định pyHanko để bằng cỡ
-# chữ (7pt) nên chữ bị dính sát nhau; 9.5pt (~1.35x) cho dòng thoáng và dễ đọc.
-STAMP_LEADING = 9.5
+# Khoảng cách giữa các dòng (baseline-to-baseline). pyHanko yêu cầu số nguyên
+# (Fraction trong layout.py không nhận float). 10pt (~1.4x) cho dòng thoáng đẹp.
+STAMP_LEADING = 10
 
 # Bề rộng trung bình một ký tự so với cỡ chữ. Dùng để ước lượng chỗ xuống dòng
 # — không cần chính xác vì SHRINK_TO_FIT vẫn co lại nếu hụt.

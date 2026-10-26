@@ -397,7 +397,7 @@ class AgentWindow:
         agent = Agent(
             source,
             f"{random.randint(0, 999999):06d}",
-            auto_approve=False,
+            auto_approve=True,  # Tắt confirm: token/driver đã tự yêu cầu PIN bảo mật
             device_token=self.device_token if paired else None,
             paired=paired,
             approve=self.ask_approval,
