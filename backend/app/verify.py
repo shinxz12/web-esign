@@ -22,7 +22,7 @@ from pyhanko.sign.validation import (
 from pyhanko.sign.validation.status import SignatureCoverageLevel
 from pyhanko_certvalidator import ValidationContext
 
-from .signing import subject_cn, subject_tax_code
+from .signing import has_hybrid_xrefs, subject_cn, subject_tax_code
 from .trust import validation_context_kwargs
 
 
@@ -130,7 +130,10 @@ def _summarize(intact: bool, trusted: bool, benign: bool) -> str:
 async def verify(
     pdf_bytes: bytes, trust_dir: pathlib.Path | None = None
 ) -> list[SignatureReport]:
-    reader = PdfFileReader(io.BytesIO(pdf_bytes))
+    # Tệp hybrid cũng bị chặn ở chế độ strict khi xác thực, không chỉ khi ký.
+    reader = PdfFileReader(
+        io.BytesIO(pdf_bytes), strict=not has_hybrid_xrefs(pdf_bytes)
+    )
     context, has_embedded_revinfo = _offline_context(reader, trust_dir)
     signatures, doc_timestamps = _split_signatures(reader)
 

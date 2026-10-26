@@ -368,3 +368,46 @@ def make_softhsm_token(lab: Lab, pfx: str, label: str) -> dict:
         capture_output=True,
     )
     return {"SOFTHSM2_CONF": str(conf)}
+
+
+def make_hybrid_pdf(pdf_bytes: bytes) -> bytes:
+    """Thêm một revision dùng hybrid cross-reference vào PDF có sẵn.
+
+    Cơ chế tương thích ngược của PDF 1.5: bảng xref cổ điển + ``/XRefStm``
+    trỏ tới xref stream chứa phần còn lại. Word, Excel và nhiều máy in PDF
+    đời cũ sinh ra kiểu này, và pyHanko ở chế độ strict từ chối ký.
+    """
+    import re
+
+    prev_startxref = int(re.findall(rb"startxref\s+(\d+)", pdf_bytes)[-1])
+    root_num, root_gen = re.findall(rb"/Root\s+(\d+)\s+(\d+)\s+R", pdf_bytes)[-1]
+    size = int(re.findall(rb"/Size\s+(\d+)", pdf_bytes)[-1])
+    root = f"{root_num.decode()} {root_gen.decode()} R"
+
+    out = bytearray(pdf_bytes)
+    if not out.endswith(b"\n"):
+        out += b"\n"
+
+    hidden_num, xrefstm_num = size, size + 1
+
+    hidden_off = len(out)
+    out += f"{hidden_num} 0 obj\n<< /Type /WebSignerHybridProbe >>\nendobj\n".encode()
+
+    # Mục xref của đối tượng ẩn, chỉ tồn tại trong xref stream. W = [1 4 2].
+    entry = bytes([1]) + hidden_off.to_bytes(4, "big") + (0).to_bytes(2, "big")
+    xrefstm_off = len(out)
+    out += (
+        f"{xrefstm_num} 0 obj\n"
+        f"<< /Type /XRef /Size {size + 2} /W [1 4 2] /Index [{hidden_num} 1] "
+        f"/Root {root} /Length {len(entry)} >>\nstream\n"
+    ).encode()
+    out += entry + b"\nendstream\nendobj\n"
+
+    table_off = len(out)
+    out += b"xref\n0 1\n0000000000 65535 f \n"
+    out += (
+        f"trailer\n<< /Size {size + 2} /Root {root} "
+        f"/Prev {prev_startxref} /XRefStm {xrefstm_off} >>\n"
+        f"startxref\n{table_off}\n%%EOF\n"
+    ).encode()
+    return bytes(out)

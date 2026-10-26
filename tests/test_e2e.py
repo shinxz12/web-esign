@@ -113,6 +113,22 @@ def test_nhieu_nguoi_ky_khong_lam_hong_chu_ky_truoc(owner, lab, pdf):
     assert "Sig2" in reports[0]["notes"][0]
 
 
+def test_ky_duoc_pdf_hybrid_cross_reference(owner, lab, pdf):
+    """Word/Excel sinh ra tệp hybrid; pyHanko ở chế độ strict từ chối ký."""
+    from harness import make_hybrid_pdf
+
+    hybrid = make_hybrid_pdf(pdf)
+    assert hybrid != pdf
+
+    doc_id = upload(owner, hybrid)
+    status, body = sign(owner, f"/api/documents/{doc_id}", "111111")
+    assert status == 200, body
+
+    status, reports = owner.get(f"/api/documents/{doc_id}/verify")
+    assert status == 200, reports
+    assert reports[0]["intact"] and reports[0]["trusted"]
+
+
 def test_sua_mot_byte_lam_moi_chu_ky_vo_hieu(owner, lab, pdf):
     import asyncio
 

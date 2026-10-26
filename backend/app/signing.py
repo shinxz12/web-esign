@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import pathlib
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from asn1crypto import cms as asn1_cms
 from asn1crypto import x509 as asn1_x509
 from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.pdf_utils.text import TextBoxStyle
 from pyhanko.sign import fields
 from pyhanko.sign.general import SigningError as PyHankoSigningError
@@ -34,6 +36,8 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from . import trust
 from .store import DATA_DIR
+
+logger = logging.getLogger("websigner.signing")
 
 MD_ALGORITHM = "sha256"
 
@@ -306,6 +310,29 @@ def _timestamper(profile: SignatureProfile) -> HTTPTimeStamper | None:
     return HTTPTimeStamper(url, timeout=15)
 
 
+def has_hybrid_xrefs(pdf_bytes: bytes) -> bool:
+    """Tệp có dùng hybrid cross-reference không.
+
+    Đây là cơ chế tương thích ngược của PDF 1.5: một bảng xref cổ điển cộng
+    thêm ``/XRefStm`` trỏ tới xref stream chứa phần còn lại. Word, Excel và
+    nhiều máy in PDF đời cũ vẫn sinh ra kiểu này.
+    """
+    return PdfFileReader(io.BytesIO(pdf_bytes), strict=True).xrefs.hybrid_xrefs_present
+
+
+def incremental_writer(pdf_bytes: bytes) -> IncrementalPdfFileWriter:
+    """Writer để ký thêm một revision.
+
+    pyHanko ở chế độ strict từ chối ký tệp hybrid vì hai bảng tham chiếu có
+    thể mâu thuẫn nhau. Nới strict cho **đúng những tệp đó**, không nới cho
+    mọi tệp — nếu không sẽ mất luôn các kiểm tra cấu trúc khác.
+    """
+    hybrid = has_hybrid_xrefs(pdf_bytes)
+    if hybrid:
+        logger.warning("Tệp dùng hybrid cross-reference; nới strict để ký được")
+    return IncrementalPdfFileWriter(io.BytesIO(pdf_bytes), strict=not hybrid)
+
+
 async def prepare(
     pdf_bytes: bytes,
     cert_der: bytes,
@@ -361,7 +388,7 @@ async def prepare(
         stamp_style=_stamp_style(lines),
     )
 
-    writer = IncrementalPdfFileWriter(io.BytesIO(pdf_bytes))
+    writer = incremental_writer(pdf_bytes)
     try:
         prepared_digest, tbs_document, output = (
             await pdf_signer.async_digest_doc_for_signing(
