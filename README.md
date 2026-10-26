@@ -177,6 +177,7 @@ Hai điểm dễ sai, đã xử lý:
 | `web/` | viewer pdf.js, kéo khung chữ ký, panel xác thực |
 | `scripts/` | chứng thư test, PDF mẫu, TSA test, token SoftHSM2, smoke test |
 | `tests/` | bất biến + e2e (tự dựng CA, CRL, TSA, backend, agent, token ảo) |
+| `Dockerfile` | ảnh triển khai backend + giao diện |
 
 ## Biến môi trường
 
@@ -198,6 +199,30 @@ Hai cái bẫy đã gặp, ghi lại để đừng vấp lại:
 - **Font phải có `unitsPerEm = 1000`.** pyHanko xuất mảng `/W` của CIDFont theo
   đơn vị gốc của font, nên font 2048 upem (Arial Unicode MS, DejaVu Sans) bị
   giãn chữ và tràn khung. Font được tự động scale về 1000 upem và cache lại.
+
+## Triển khai
+
+`Dockerfile` chỉ đóng gói backend + giao diện. Agent chạy trên máy người ký,
+không bao giờ nằm trong container.
+
+```bash
+docker build -t web-signer .
+docker run -p 8000:8000 -v websigner-data:/data web-signer
+```
+
+Ảnh cài sẵn DejaVu Sans để hình chữ ký có dấu tiếng Việt, chạy bằng user
+không phải root, và ghi mọi thứ vào `/data` (volume duy nhất cần gắn).
+
+Sau khi dựng, **bắt buộc** làm hai việc thì mới ký được mức B-LT:
+
+1. Chép chứng thư root của các CA công cộng vào `/data/trust/*.crt`. Trust
+   store rỗng thì mọi chữ ký báo “chưa được tin cậy”, và hồ sơ B-LT sẽ từ chối
+   ký vì không dựng được chuỗi.
+2. Đặt `WEBSIGNER_TSA_URL` trỏ tới TSA của CA. Chưa đặt thì hệ thống tự hạ
+   xuống B-B (không dấu thời gian, không LTV).
+
+Backend phải chạy **một worker** cho mỗi phiên ký: trạng thái pha 1 nằm trong
+bộ nhớ tiến trình (xem phần Giới hạn).
 
 ## Giới hạn hiện tại
 

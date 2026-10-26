@@ -150,6 +150,48 @@ def test_chi_nhan_chung_thu_ca_lam_trust_anchor(tmp_path: pathlib.Path) -> None:
     (tmp_path / "ca.crt").write_bytes((certs / "ca.crt").read_bytes())
     (tmp_path / "leaf.crt").write_bytes((certs / "signer-a.crt").read_bytes())
 
-    roots = trust.load_trust_roots(tmp_path)
-    assert len(roots) == 1
-    assert roots[0].subject.native["common_name"].startswith("DEMO-CA Root")
+    material = trust.load_trust_material(tmp_path)
+    assert [c.subject.native["common_name"] for c in material.roots] == [
+        "DEMO-CA Root (TEST ONLY)"
+    ]
+    assert material.intermediates == []  # leaf không được lọt vào đâu cả
+
+
+def test_ca_trung_gian_khong_tu_lam_trust_anchor() -> None:
+    """CA do CA khác cấp chỉ để nối chuỗi, không phải gốc tin cậy."""
+    seed = ROOT / "trust"
+    if not seed.is_dir():
+        pytest.skip("không có thư mục trust/ mặc định")
+
+    material = trust.load_trust_material(seed)
+    roots = {c.subject.native["common_name"] for c in material.roots}
+    assert roots == {"MIC National Root CA", "Vietnam National Root CA"}
+    assert all(c.subject != c.issuer for c in material.intermediates)
+    assert {c.subject.native["common_name"] for c in material.intermediates} == {
+        "Viettel-CA",
+        "Viettel-CA RS",
+    }
+
+
+def test_doc_duoc_ca_pem_lan_der(tmp_path: pathlib.Path) -> None:
+    """Thư mục trust thật trộn cả hai định dạng và đuôi .cer lẫn .crt."""
+    seed = ROOT / "trust"
+    if not seed.is_dir():
+        pytest.skip("không có thư mục trust/ mặc định")
+    material = trust.load_trust_material(seed)
+    assert len(material.roots) + len(material.intermediates) == 5
+
+
+def test_nap_mac_dinh_chi_khi_thu_muc_con_rong(tmp_path: pathlib.Path) -> None:
+    if not (ROOT / "trust").is_dir():
+        pytest.skip("không có thư mục trust/ mặc định")
+
+    target = tmp_path / "trust"
+    assert trust.seed_trust_store(target) == 5
+    assert trust.seed_trust_store(target) == 0  # không ghi đè lần hai
+
+    # người vận hành xoá bớt rồi khởi động lại: không bị nạp lại
+    for path in list(target.iterdir())[:3]:
+        path.unlink()
+    assert trust.seed_trust_store(target) == 0
+    assert len(list(target.iterdir())) == 2

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import pathlib
 import secrets
 from datetime import datetime, timezone
@@ -36,6 +37,12 @@ from pydantic import BaseModel, Field
 from . import signing, store, trust, verify
 from .relay import AgentError, AgentSession, AgentUnavailable, hub
 
+# uvicorn chỉ cấu hình logger của nó; root logger không có handler nên log của
+# ứng dụng sẽ rơi vào hư vô nếu không tự gắn.
+logging.basicConfig(
+    level=os.environ.get("WEBSIGNER_LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)-8s %(name)s: %(message)s",
+)
 logger = logging.getLogger("websigner")
 
 WEB_DIR = pathlib.Path(__file__).resolve().parents[2] / "web"
@@ -48,6 +55,16 @@ app = FastAPI(title="Web Signer", version="0.2.0")
 @app.on_event("startup")
 def _startup() -> None:
     store.init()
+    trust.seed_trust_store()
+    material = trust.load_trust_material()
+    logger.info(
+        "Trust store %s: %d root, %d CA trung gian",
+        trust.TRUST_DIR,
+        len(material.roots),
+        len(material.intermediates),
+    )
+    for root in material.roots:
+        logger.info("  root: %s", root.subject.native.get("common_name"))
     logger.info("Font hình chữ ký: %s", signing.find_font() or "mặc định")
     logger.info("Hồ sơ chữ ký mặc định: %s", signing.default_profile().value)
     logger.info("TSA: %s", trust.tsa_url() or "không dùng")

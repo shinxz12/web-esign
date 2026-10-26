@@ -20,6 +20,8 @@ RUN pip install -r requirements.txt
 
 COPY backend/ backend/
 COPY web/ web/
+# Chứng thư CA công khai của VN, nạp vào /data/trust lần chạy đầu
+COPY trust/ trust/
 
 # Khoá riêng của người ký không bao giờ tới đây, nhưng tài liệu thì có.
 RUN useradd --system --uid 10001 websigner \

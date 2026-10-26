@@ -23,7 +23,7 @@ from pyhanko.sign.validation.status import SignatureCoverageLevel
 from pyhanko_certvalidator import ValidationContext
 
 from .signing import subject_cn, subject_tax_code
-from .trust import load_trust_roots
+from .trust import validation_context_kwargs
 
 
 @dataclass
@@ -58,11 +58,9 @@ def _offline_context(reader: PdfFileReader, trust_dir: pathlib.Path | None) -> t
 
     -> (context, có_revinfo_nhúng)
     """
-    kwargs = {
-        "trust_roots": load_trust_roots(trust_dir),
-        "allow_fetching": False,
-        "weak_hash_algos": set(),
-    }
+    kwargs = validation_context_kwargs(
+        allow_fetching=False, revocation_mode="soft-fail", trust_dir=trust_dir
+    )
     try:
         dss = DocumentSecurityStore.read_dss(reader)
     except Exception:
@@ -72,7 +70,6 @@ def _offline_context(reader: PdfFileReader, trust_dir: pathlib.Path | None) -> t
         kwargs["revocation_mode"] = "hard-fail"
         return dss.as_validation_context(kwargs), True
 
-    kwargs["revocation_mode"] = "soft-fail"
     return ValidationContext(**kwargs), False
 
 
