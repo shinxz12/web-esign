@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Cài phụ thuộc rồi chạy Web Signer Agent trên Windows.
 
