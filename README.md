@@ -144,6 +144,8 @@ Người ký thường giữ token của vài công ty và rút ra cắm vào li
 - Mỗi token một PIN: agent hỏi PIN theo số sê-ri và nhớ riêng từng token.
 - Ký bằng chứng thư nào thì agent mở đúng token giữ chứng thư đó, không phải
   token dò thấy đầu tiên. Nếu token đã bị rút, lỗi nói thẳng ra.
+- Server khởi động lại (deploy, mạng chớp) thì agent tự nối lại, giãn dần
+  1s → 30s, và **giữ nguyên mã ghép cặp** — không phải nhập lại trên web.
 
 ### macOS/Linux
 

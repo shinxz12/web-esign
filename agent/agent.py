@@ -46,6 +46,11 @@ from keysource import (  # noqa: E402
 
 DEFAULT_SERVER = "ws://127.0.0.1:8000/ws/agent"
 
+# Nối lại sau khi rớt: nhanh ở lần đầu, giãn dần để không nã server đang khởi
+# động lại.
+RECONNECT_MIN_SECONDS = 1.0
+RECONNECT_MAX_SECONDS = 30.0
+
 # Thư viện PKCS#11 do phần mềm ký của các CA Việt Nam cài sẵn trên Windows.
 # Tệp nằm trong System32 nên chỉ cần tên, không cần đường dẫn tuyệt đối.
 WINDOWS_PKCS11_CANDIDATES = (
@@ -352,38 +357,69 @@ class Agent:
         print(f"  ✓ token trả về chữ ký {len(signature)} byte")
         return {"signature_b64": base64.b64encode(signature).decode()}
 
-    async def run(self, server_url: str) -> None:
-        async with websockets.connect(server_url, max_size=4 * 1024 * 1024) as ws:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "hello",
-                        "code": self.code,
-                        "name": self.source.label,
-                        "platform": sys.platform,
-                    }
-                )
-            )
-            print(f"Đã kết nối {server_url}")
-            print()
-            print("  ╔═══════════════════════════════════════╗")
-            print(f"  ║   MÃ GHÉP CẶP:  {self.code}              ║")
-            print("  ╚═══════════════════════════════════════╝")
-            print("  Nhập mã này vào trang web để ghép cặp.")
-            print()
+    def _print_pairing_code(self) -> None:
+        print()
+        print("  ╔═══════════════════════════════════════╗")
+        print(f"  ║   MÃ GHÉP CẶP:  {self.code}              ║")
+        print("  ╚═══════════════════════════════════════╝")
+        print("  Nhập mã này vào trang web để ghép cặp.")
+        print()
 
-            async for raw in ws:
-                message = json.loads(raw)
-                if message.get("type") == "ready":
-                    continue
-                request_id = message.get("id")
-                try:
-                    data = await self.handle(message)
-                    reply = {"id": request_id, "ok": True, "data": data}
-                except Exception as exc:  # trả lỗi về server, giữ kết nối
-                    print(f"  ✗ {exc}")
-                    reply = {"id": request_id, "ok": False, "error": str(exc)}
-                await ws.send(json.dumps(reply))
+    async def _serve(self, ws) -> None:
+        """Phục vụ yêu cầu cho tới khi server đóng kết nối."""
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "code": self.code,
+                    "name": self.source.label,
+                    "platform": sys.platform,
+                }
+            )
+        )
+        async for raw in ws:
+            message = json.loads(raw)
+            if message.get("type") == "ready":
+                continue
+            request_id = message.get("id")
+            try:
+                data = await self.handle(message)
+                reply = {"id": request_id, "ok": True, "data": data}
+            except Exception as exc:  # trả lỗi về server, giữ kết nối
+                print(f"  ✗ {exc}")
+                reply = {"id": request_id, "ok": False, "error": str(exc)}
+            await ws.send(json.dumps(reply))
+
+    async def run(self, server_url: str) -> None:
+        """Giữ kết nối, tự nối lại khi rớt.
+
+        Server khởi động lại (deploy, mạng chớp) là chuyện thường; agent chết
+        theo thì người ký phải tự đi mở lại terminal. Mã ghép cặp giữ nguyên
+        nên trang web không phải nhập lại.
+        """
+        delay = RECONNECT_MIN_SECONDS
+        announced = False
+
+        while True:
+            try:
+                async with websockets.connect(
+                    server_url, max_size=4 * 1024 * 1024
+                ) as ws:
+                    print(f"Đã kết nối {server_url}")
+                    if not announced:
+                        self._print_pairing_code()
+                        announced = True
+                    delay = RECONNECT_MIN_SECONDS
+                    await self._serve(ws)
+                print("  Server đóng kết nối.")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"  Mất kết nối: {exc}")
+
+            print(f"  Thử nối lại sau {delay:.0f}s…")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RECONNECT_MAX_SECONDS)
 
 
 def build_source(args: argparse.Namespace) -> KeySource:
@@ -507,12 +543,10 @@ def main() -> int:
     agent = Agent(source, args.code or f"{random.randint(0, 999999):06d}",
                   args.auto_approve)
     try:
+        # run() tự nối lại, nên chỉ thoát khi người dùng dừng.
         asyncio.run(agent.run(args.server))
     except KeyboardInterrupt:
         print("\nĐã dừng agent.")
-    except OSError as exc:
-        print(f"Không kết nối được server: {exc}", file=sys.stderr)
-        return 1
     return 0
 
 

@@ -24,10 +24,12 @@ from harness import (  # noqa: E402
     Lab,
     cert_for,
     first_cert,
+    free_port,
     make_softhsm_token,
     sign,
     softhsm_module,
     upload,
+    wait_until,
 )
 
 pytestmark = pytest.mark.e2e
@@ -332,6 +334,36 @@ def test_logo_va_mau_duoc_ve_vao_hinh_chu_ky(owner, lab, pdf):
 
     signed = owner.download(f"/api/documents/{doc_id}/download")
     assert _appearance_has_image(signed), "logo không được nhúng vào hình chữ ký"
+
+
+def test_agent_tu_noi_lai_khi_server_khoi_dong_lai(lab, pdf):
+    """Deploy lại backend là chuyện thường; agent không được chết theo.
+
+    Mã ghép cặp phải giữ nguyên để người ký không phải nhập lại trên web.
+    """
+    port = free_port()
+    backend = lab.start_backend("backend-restart-1", port=port)
+    lab.agent_with_pfx("121212", "signer-a.pfx", backend=backend)
+
+    before = backend.client()
+    assert before.get("/api/agents/121212/certificates")[0] == 200
+
+    backend.process.stop()  # mô phỏng deploy: server biến mất
+    restarted = lab.start_backend("backend-restart-2", port=port)
+    client = restarted.client()
+
+    wait_until(
+        lambda: client.get("/api/agents/121212/certificates")[0] == 200,
+        "agent nối lại sau khi server khởi động lại",
+        timeout=60,
+    )
+
+    # Nối lại thôi chưa đủ — phải ký được thật.
+    doc_id = upload(client, pdf)
+    status, body = sign(client, f"/api/documents/{doc_id}", "121212")
+    assert status == 200, body
+    _, reports = client.get(f"/api/documents/{doc_id}/verify")
+    assert reports[0]["intact"] and reports[0]["trusted"]
 
 
 def test_rsa_pss_dung_salt_cua_server(lab, pdf):
