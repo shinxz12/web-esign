@@ -105,13 +105,49 @@ Nhóm `e2e` tự dựng môi trường riêng trong thư mục tạm: cấp CA m
 CRL, chạy TSA, chạy backend và agent thật, nạp USB token ảo SoftHSM2 — rồi ký,
 xác thực và thử phá. Không mock gì, không đụng vào `data/` của bạn.
 
-### Ký bằng USB token thật
+### Ký bằng USB token thật (Windows)
+
+Phần mềm ký của CA — I-CA, Viettel-CA, VNPT-CA, FPT-CA, BKAV, Nacencomm… —
+luôn đăng ký token vào Windows Certificate Store `MY` qua CSP/minidriver. Agent
+đọc thẳng từ đó, không cần biết của CA nào:
+
+```powershell
+.\scripts\windows-agent.ps1
+.\scripts\windows-agent.ps1 -Server wss://web-signer.btngoc.io.vn/ws/agent
+.\scripts\windows-agent.ps1 -ListOnly      # chỉ xem token đọc được những gì
+```
+
+Script tự tạo môi trường Python và cài 3 gói agent cần. Gọi tay cũng được:
+
+```powershell
+py agent\agent.py --cng
+py agent\agent.py --cng --hardware-only    # bỏ chứng thư khoá mềm trong store
+py agent\agent.py --list                   # chẩn đoán: in chứng thư rồi thoát
+```
+
+Phần mềm của CA thường cài kèm cả DLL PKCS#11. Dùng đường đó khi cần:
+
+```powershell
+py agent\agent.py --find-drivers           # dò DLL đã cài trong System32
+py agent\agent.py --pkcs11 auto            # dùng DLL đầu tiên tìm thấy
+```
+
+### Nhiều token, nhiều công ty
+
+Người ký thường giữ token của vài công ty và rút ra cắm vào liên tục. Agent
+**không bám vào token nào cả**: mỗi lần liệt kê hay ký đều dò lại slot.
+
+- Cắm nhiều token cùng lúc: thấy hết chứng thư của mọi token.
+- Rút token A cắm token B: bấm **Kết nối** lại trên web là thấy chứng thư mới,
+  không phải khởi động lại agent.
+- Chưa cắm token lúc khởi động cũng không sao — cắm sau rồi bấm Kết nối.
+- Mỗi token một PIN: agent hỏi PIN theo số sê-ri và nhớ riêng từng token.
+- Ký bằng chứng thư nào thì agent mở đúng token giữ chứng thư đó, không phải
+  token dò thấy đầu tiên. Nếu token đã bị rút, lỗi nói thẳng ra.
+
+### macOS/Linux
 
 ```bash
-# Windows: đọc thẳng Certificate Store, không cần biết driver của CA nào
-.venv/bin/python agent/agent.py --cng
-
-# macOS/Linux: qua driver PKCS#11 của nhà cung cấp token
 .venv/bin/python agent/agent.py --pkcs11 /đường/dẫn/driver.so
 ```
 
@@ -121,11 +157,10 @@ xác thực và thử phá. Không mock gì, không đụng vào `data/` của b
 | Feitian ePass2003 | `libcastle.dylib` / `eps2003csp11.dll` |
 | Gemalto / Thales | `libgclib.dylib` / `gclib.dll` |
 
-`--cng` nên là lựa chọn mặc định trên Windows: mọi token VN (Viettel-CA,
-VNPT-CA, FPT-CA, BKAV, Nacencomm/CA2…) đều cài sẵn CSP/minidriver vào store
-`MY`, nên không phải dò đường dẫn driver theo từng CA. Mặc định chỉ nhận chứng
-thư có khoá nằm trên thiết bị phần cứng; thêm `--allow-software-key` để nhận cả
-khoá mềm.
+Lưu ý: nhiều token VN được format theo chuẩn **minidriver của Windows**
+(`mscp`) chứ không phải PKCS#15, nên OpenSC trên macOS/Linux sẽ báo
+`CKR_TOKEN_NOT_RECOGNIZED` dù nhận được đầu đọc. Phải dùng middleware của
+hãng, hoặc ký trên Windows.
 
 ### Thử đường PKCS#11 khi chưa có token
 
@@ -175,7 +210,7 @@ Hai điểm dễ sai, đã xử lý:
 | `agent/agent.py` | client relay, nguồn khoá PKCS#11 / PFX |
 | `agent/cng.py` | nguồn khoá Windows Certificate Store (CNG + CSP) |
 | `web/` | viewer pdf.js, kéo khung chữ ký, panel xác thực |
-| `scripts/` | chứng thư test, PDF mẫu, TSA test, token SoftHSM2, smoke test |
+| `scripts/` | chứng thư test, PDF mẫu, TSA test, token SoftHSM2, agent Windows |
 | `tests/` | bất biến + e2e (tự dựng CA, CRL, TSA, backend, agent, token ảo) |
 | `Dockerfile` | ảnh triển khai backend + giao diện |
 
@@ -227,8 +262,8 @@ bộ nhớ tiến trình (xem phần Giới hạn).
 ## Giới hạn hiện tại
 
 - `agent/cng.py` **chưa chạy thử trên Windows thật** — không có máy Windows
-  trong môi trường phát triển. Phần PKCS#11, PFX, luồng ký, TSA, LTV đều đã
-  chạy end-to-end.
+  trong môi trường phát triển. Phần PKCS#11 (kể cả nhiều token cùng lúc), PFX,
+  luồng ký, TSA, LTV đều đã chạy end-to-end.
 - Băm cố định SHA-256; chưa có SHA-384/512 hay EdDSA.
 - `find_by_invite()` quét toàn bộ thư mục tài liệu. Đủ ở quy mô này; lên cơ sở
   dữ liệu thì thay bằng chỉ mục.

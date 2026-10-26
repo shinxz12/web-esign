@@ -37,6 +37,8 @@ const ui = {
   profileHint: $("profile-hint"),
   reason: $("sign-reason"),
   location: $("sign-location"),
+  logoInput: $("logo-input"),
+  logoStatus: $("logo-status"),
   btnPlace: $("btn-place"),
   btnSign: $("btn-sign"),
   btnVerify: $("btn-verify"),
@@ -441,6 +443,8 @@ async function sign() {
         box: state.box.rect,
         reason: ui.reason.value.trim(),
         location: ui.location.value.trim(),
+        color: $("sign-color").value,
+        show_border: $("sign-border").checked,
       }),
     });
     setStatus(ui.signStatus, "Đã ký xong.", "ok");
@@ -452,6 +456,43 @@ async function sign() {
   } finally {
     updateBoxInfo();
   }
+}
+
+
+// --------------------------------------------------------------------------
+// Logo / con dấu
+// --------------------------------------------------------------------------
+
+/** Logo gắn với người ký (cookie chủ hoặc liên kết mời), không gắn với tài liệu. */
+function logoBase() {
+  return SIGNER_MODE ? `/api/sign/${INVITE}/logo` : "/api/logo";
+}
+
+async function refreshLogo() {
+  try {
+    const { has_logo } = await api(logoBase());
+    setStatus(
+      ui.logoStatus,
+      has_logo ? "Đã có logo, sẽ vẽ bên trái chữ ký." : "Chưa có logo.",
+      has_logo ? "ok" : "muted",
+    );
+  } catch {
+    setStatus(ui.logoStatus, "", "muted");
+  }
+}
+
+async function uploadLogo() {
+  const file = ui.logoInput.files[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    const info = await api(logoBase(), { method: "POST", body });
+    setStatus(ui.logoStatus, `Đã tải logo ${info.format}.`, "ok");
+  } catch (error) {
+    setStatus(ui.logoStatus, error.message, "err");
+  }
+  ui.logoInput.value = "";
 }
 
 async function runVerify() {
@@ -549,6 +590,12 @@ ui.btnPlace.onclick = () => enablePlacing(!state.placing);
 ui.btnConnect.onclick = connectAgent;
 ui.btnSign.onclick = sign;
 ui.btnVerify.onclick = runVerify;
+ui.logoInput.onchange = uploadLogo;
+$("btn-logo-clear").onclick = async () => {
+  await api(logoBase(), { method: "DELETE" }).catch(() => {});
+  await refreshLogo();
+};
+refreshLogo();
 ui.agentCode.addEventListener("keydown", (e) => {
   if (e.key === "Enter") connectAgent();
 });

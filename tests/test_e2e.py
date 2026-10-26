@@ -22,6 +22,7 @@ from harness import (  # noqa: E402
     BOX_LEFT,
     BOX_RIGHT,
     Lab,
+    cert_for,
     first_cert,
     make_softhsm_token,
     sign,
@@ -259,6 +260,44 @@ def test_ecdsa_qua_token_pkcs11(lab, owner, pdf):
     _, reports = owner.get(f"/api/documents/{doc_id}/verify")
     assert reports[0]["signer"] == "LE MINH CUONG"
     assert reports[0]["intact"] and reports[0]["trusted"] and reports[0]["ltv"]
+
+
+@pytest.mark.skipif(softhsm_module() is None, reason="chưa cài softhsm2")
+def test_nhieu_token_cung_luc_ky_dung_token(lab, owner, pdf):
+    """Người ký giữ token của nhiều công ty, cắm cùng lúc.
+
+    Agent phải liệt kê chứng thư của mọi token và ký bằng đúng token giữ
+    chứng thư được chọn — không phải token đầu tiên dò thấy.
+    """
+    env = make_softhsm_token(lab, "signer-a.pfx", "E2E-CTY-A")
+    make_softhsm_token(lab, "signer-b.pfx", "E2E-CTY-B")
+    # Không truyền --token-label: agent phải tự quét mọi token đang cắm.
+    lab.start_agent(
+        "555555", "--pkcs11", softhsm_module(), "--pin", "123456", env=env
+    )
+
+    _, listed = owner.get("/api/agents/555555/certificates")
+    subjects = {c["subject"] for c in listed["certificates"]}
+    assert {"NGUYEN VAN A", "TRAN THI BICH"} <= subjects, subjects
+
+    # Ký bằng chứng thư của công ty thứ hai, nằm trên token thứ hai.
+    doc_id = upload(owner, pdf)
+    status, body = owner.post(
+        f"/api/documents/{doc_id}/sign",
+        body={
+            "agent_code": "555555",
+            "cert_id": cert_for(owner, "555555", "TRAN THI BICH"),
+            "page": 1,
+            "box": BOX_RIGHT,
+            "reason": "Ký bằng token công ty B",
+        },
+    )
+    assert status == 200, body
+
+    _, reports = owner.get(f"/api/documents/{doc_id}/verify")
+    assert reports[0]["signer"] == "TRAN THI BICH"
+    assert reports[0]["tax_code"] == "0107654321"
+    assert reports[0]["intact"] and reports[0]["trusted"]
 
 
 def test_rsa_pss_dung_salt_cua_server(lab, pdf):

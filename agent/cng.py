@@ -206,10 +206,12 @@ _advapi32 = None
 _kernel32 = None
 
 if sys.platform == "win32":
-    _crypt32 = ctypes.windll.crypt32
-    _ncrypt = ctypes.windll.ncrypt
-    _advapi32 = ctypes.windll.advapi32
-    _kernel32 = ctypes.windll.kernel32
+    # use_last_error: nếu không bật, GetLastError có thể đã bị lời gọi khác của
+    # ctypes ghi đè trước khi ta đọc, báo ra mã lỗi sai hoàn toàn.
+    _crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    _ncrypt = ctypes.WinDLL("ncrypt", use_last_error=True)
+    _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     # crypt32.dll
     _crypt32.CertOpenSystemStoreW.argtypes = [_HANDLE, _LPCWSTR]
@@ -327,12 +329,14 @@ if sys.platform == "win32":
 
 
 def _get_last_error() -> int:
-    """Lấy mã lỗi Win32 gần nhất."""
-    if hasattr(ctypes, "GetLastError"):
-        return ctypes.GetLastError()
-    if _kernel32 is not None and hasattr(_kernel32, "GetLastError"):
-        return _kernel32.GetLastError()
-    return 0
+    """Mã lỗi Win32 gần nhất, lấy từ bản lưu riêng của ctypes.
+
+    Phải dùng ``get_last_error`` chứ không phải ``GetLastError``: ctypes gọi
+    hàm khác giữa chừng sẽ ghi đè giá trị thật của hệ thống.
+    """
+    if sys.platform != "win32":
+        return 0
+    return ctypes.get_last_error()
 
 
 def _format_win_error(code: int) -> str:
@@ -366,12 +370,15 @@ class WindowsCertStoreKeySource:
 
     label: str = "Windows Certificate Store (MY)"
 
-    def __init__(self, store_name: str = "MY", hardware_only: bool = True) -> None:
+    def __init__(self, store_name: str = "MY", hardware_only: bool = False) -> None:
         """Khởi tạo nguồn khoá từ Windows Certificate Store.
 
         :param store_name: Tên store hệ thống (mặc định "MY" - Personal store).
         :param hardware_only: Nếu True, chỉ giữ chứng thư mà khoá riêng nằm
-            trên thiết bị phần cứng (USB token, smartcard). Bỏ qua khoá phần mềm.
+            trên thiết bị phần cứng (USB token, smartcard).
+            Mặc định **tắt**: nhiều minidriver không khai báo ``ImplType``, bật
+            lên sẽ lọc sạch danh sách và người dùng chỉ thấy "không có chứng
+            thư nào" mà không hiểu vì sao. Thà hiện thừa để người ký tự chọn.
         :raises KeySourceError: Khi không chạy trên Windows hoặc không mở được store.
         """
         if not is_available():

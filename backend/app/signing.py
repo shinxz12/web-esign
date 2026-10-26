@@ -22,6 +22,12 @@ from typing import IO, Any, Sequence
 from asn1crypto import cms as asn1_cms
 from asn1crypto import x509 as asn1_x509
 from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
+from pyhanko.pdf_utils.layout import (
+    AxisAlignment,
+    InnerScaling,
+    Margins,
+    SimpleBoxLayoutRule,
+)
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.pdf_utils.text import TextBoxStyle
@@ -152,6 +158,9 @@ class SignatureAppearance:
     box: tuple[float, float, float, float]  # (x1, y1, x2, y2), gốc dưới-trái
     reason: str | None = None
     location: str | None = None
+    logo: bytes | None = None  # PNG/JPEG vẽ bên trái hình chữ ký
+    color: str = "xanh-duong"
+    show_border: bool = False
 
 
 @dataclass
@@ -207,41 +216,91 @@ def subject_tax_code(cert: asn1_x509.Certificate) -> str | None:
     return None
 
 
-def _stamp_style(lines: Sequence[str]) -> TextStampStyle:
+# Bảng màu quen thuộc trên chữ ký số VN. Mặc định xanh dương đậm.
+STAMP_COLORS: dict[str, tuple[float, float, float]] = {
+    "xanh-duong": (0.08, 0.22, 0.48),
+    "xanh-la": (0.11, 0.48, 0.24),
+    "do": (0.63, 0.11, 0.11),
+    "den": (0.0, 0.0, 0.0),
+}
+DEFAULT_STAMP_COLOR = "xanh-duong"
+
+
+def _logo_content(logo_png: bytes):
+    """Logo/con dấu vẽ bên trái hình chữ ký."""
+    from PIL import Image
+    from pyhanko.pdf_utils.images import PdfImage
+
+    image = Image.open(io.BytesIO(logo_png))
+    image.load()
+    return PdfImage(image)
+
+
+def _stamp_style(
+    lines: Sequence[str], appearance: "SignatureAppearance"
+) -> TextStampStyle:
+    """Bố cục theo thông lệ chữ ký số VN: logo bên trái, chữ bên phải."""
     font_path = find_font()
+    font_size = 7
+    color = STAMP_COLORS.get(appearance.color, STAMP_COLORS[DEFAULT_STAMP_COLOR])
     if font_path:
         box_style = TextBoxStyle(
-            font=GlyphAccumulatorFactory(font_path, font_size=8), font_size=8
+            font=GlyphAccumulatorFactory(font_path, font_size=font_size),
+            font_size=font_size,
+            text_color=color,
         )
-    else:
-        box_style = TextBoxStyle(font_size=8)
+    else:  # font chuẩn PDF, không có dấu tiếng Việt
+        box_style = TextBoxStyle(font_size=font_size, text_color=color)
+
+    height = abs(appearance.box[3] - appearance.box[1])
+    logo = _logo_content(appearance.logo) if appearance.logo else None
+    # Chừa bên trái đúng một ô vuông bằng chiều cao khung để đặt logo.
+    text_left = int(height) + 4 if logo else 6
+
     return TextStampStyle(
         stamp_text="\n".join(lines),
         text_box_style=box_style,
-        border_width=1,
-        timestamp_format="%d/%m/%Y %H:%M:%S",
+        border_width=1 if appearance.show_border else 0,
+        border_color=color,
+        background=logo,
+        background_opacity=1.0,
+        background_layout=SimpleBoxLayoutRule(
+            x_align=AxisAlignment.ALIGN_MIN,
+            y_align=AxisAlignment.ALIGN_MID,
+            margins=Margins(left=2, right=0, top=2, bottom=2),
+            inner_content_scaling=InnerScaling.SHRINK_TO_FIT,
+        ),
+        inner_content_layout=SimpleBoxLayoutRule(
+            x_align=AxisAlignment.ALIGN_MIN,
+            y_align=AxisAlignment.ALIGN_MID,
+            margins=Margins(left=text_left, right=3, top=2, bottom=2),
+            inner_content_scaling=InnerScaling.SHRINK_TO_FIT,
+        ),
+        # %z cho ra +0700, đúng kiểu Adobe hiển thị trên chữ ký VN
+        timestamp_format="%d/%m/%Y %H:%M:%S %z",
     )
 
 
 def _appearance_lines(
     cert: asn1_x509.Certificate, appearance: SignatureAppearance
 ) -> tuple[list[str], dict[str, str]]:
+    """Nhãn song ngữ giống chữ ký của các CA công cộng VN."""
     params: dict[str, str] = {"cn": subject_cn(cert)}
-    lines = ["Ký bởi: %(cn)s"]
+    lines = ["Digitally signed by/Ký bởi: %(cn)s"]
 
     mst = subject_tax_code(cert)
     if mst:
         params["mst"] = mst
-        lines.append("MST: %(mst)s")
+        lines.append("Tax code/MST: %(mst)s")
 
-    lines.append("Ký ngày: %(ts)s")
+    lines.append("Signing date/Ngày ký: %(ts)s")
 
     if appearance.reason:
         params["reason"] = appearance.reason
-        lines.append("Lý do: %(reason)s")
+        lines.append("Reason/Lý do: %(reason)s")
     if appearance.location:
         params["location"] = appearance.location
-        lines.append("Nơi ký: %(location)s")
+        lines.append("Location/Nơi ký: %(location)s")
 
     return lines, params
 
@@ -385,7 +444,7 @@ async def prepare(
             on_page=appearance.page,
             box=appearance.box,
         ),
-        stamp_style=_stamp_style(lines),
+        stamp_style=_stamp_style(lines, appearance),
     )
 
     writer = incremental_writer(pdf_bytes)

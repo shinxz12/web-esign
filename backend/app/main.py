@@ -12,6 +12,7 @@ Phân quyền không dùng bảng người dùng:
 from __future__ import annotations
 
 import base64
+import io
 import logging
 import os
 import pathlib
@@ -105,6 +106,9 @@ class SignRequest(BaseModel):
     box: tuple[float, float, float, float]
     reason: str | None = None
     location: str | None = None
+    color: str = signing.DEFAULT_STAMP_COLOR
+    show_border: bool = False
+    use_logo: bool = True
 
 
 class SignerInput(BaseModel):
@@ -208,7 +212,7 @@ async def api_sign_as_owner(
             409,
             "Tài liệu dùng luồng ký có thứ tự — hãy ký qua liên kết của người ký",
         )
-    return (await _perform_signing(meta, request, slot=None)).to_dict(
+    return (await _perform_signing(meta, request, slot=None, logo_key=owner)).to_dict(
         redact_invites=False
     )
 
@@ -260,7 +264,62 @@ async def api_invite_sign(invite: str, request: SignRequest = Body(...)) -> dict
         raise HTTPException(
             409, f"Chưa tới lượt bạn — đang chờ {nxt.name if nxt else '—'} ký"
         )
-    return (await _perform_signing(meta, request, slot=slot)).to_dict()
+    return (
+        await _perform_signing(meta, request, slot=slot, logo_key=invite)
+    ).to_dict()
+
+
+async def _store_logo(key: str, file: UploadFile) -> dict:
+    """Logo/con dấu dùng cho mọi chữ ký của người này."""
+    data = await file.read()
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(400, "Logo quá lớn, tối đa 2 MB")
+    try:
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(data))
+        image.verify()  # chỉ nhận ảnh thật, không nhận tệp giả đuôi ảnh
+    except Exception as exc:
+        raise HTTPException(400, f"Không đọc được ảnh: {exc}") from exc
+    store.save_logo(key, data)
+    return {"ok": True, "size": len(data), "format": image.format}
+
+
+@app.post("/api/logo")
+async def api_upload_logo(
+    file: UploadFile = File(...), owner: str = Depends(owner_token)
+) -> dict:
+    return await _store_logo(owner, file)
+
+
+@app.delete("/api/logo", status_code=204)
+def api_delete_logo(owner: str = Depends(owner_token)) -> Response:
+    store.delete_logo(owner)
+    return Response(status_code=204)
+
+
+@app.get("/api/logo")
+def api_has_logo(owner: str = Depends(owner_token)) -> dict:
+    return {"has_logo": store.load_logo(owner) is not None}
+
+
+@app.post("/api/sign/{invite}/logo")
+async def api_upload_invite_logo(invite: str, file: UploadFile = File(...)) -> dict:
+    _invited(invite)
+    return await _store_logo(invite, file)
+
+
+@app.get("/api/sign/{invite}/logo")
+def api_has_invite_logo(invite: str) -> dict:
+    _invited(invite)
+    return {"has_logo": store.load_logo(invite) is not None}
+
+
+@app.delete("/api/sign/{invite}/logo", status_code=204)
+def api_delete_invite_logo(invite: str) -> Response:
+    _invited(invite)
+    store.delete_logo(invite)
+    return Response(status_code=204)
 
 
 # --------------------------------------------------------------------------
@@ -272,6 +331,7 @@ async def _perform_signing(
     meta: store.DocumentMeta,
     request: SignRequest,
     slot: store.SignerSlot | None,
+    logo_key: str,
 ) -> store.DocumentMeta:
     try:
         session = hub.get(request.agent_code)
@@ -304,6 +364,9 @@ async def _perform_signing(
         box=request.box,
         reason=request.reason or None,
         location=request.location or None,
+        logo=store.load_logo(logo_key) if request.use_logo else None,
+        color=request.color,
+        show_border=request.show_border,
     )
     field_name = f"Sig{len(meta.signatures) + 1}"
 

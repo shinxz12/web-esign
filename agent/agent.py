@@ -21,6 +21,7 @@ import base64
 import getpass
 import hashlib
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -37,12 +38,52 @@ from keysource import (  # noqa: E402
     KeySource,
     KeySourceError,
     SigAlgo,
+    cert_id_for,
     ecdsa_raw_to_der,
     pss_salt_length,
     rfc4514_cn,
 )
 
 DEFAULT_SERVER = "ws://127.0.0.1:8000/ws/agent"
+
+# Thư viện PKCS#11 do phần mềm ký của các CA Việt Nam cài sẵn trên Windows.
+# Tệp nằm trong System32 nên chỉ cần tên, không cần đường dẫn tuyệt đối.
+WINDOWS_PKCS11_CANDIDATES = (
+    "ica_csp11.dll",  # I-CA
+    "eps2003csp11.dll",  # Feitian ePass2003 — Viettel-CA và nhiều CA khác
+    "ShuttleCsp11_3003.dll",  # Feitian ePass3003
+    "SignerPKCS11.dll",  # VNPT-CA
+    "bkav_p11.dll",  # BKAV-CA
+    "ncaP11.dll",  # Nacencomm / CA2
+    "eTPKCS11.dll",  # SafeNet eToken
+    "gclib.dll",  # Gemalto / Thales
+    "opensc-pkcs11.dll",  # OpenSC nếu người dùng tự cài
+)
+
+UNIX_PKCS11_CANDIDATES = (
+    "/usr/lib/opensc-pkcs11.so",
+    "/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so",
+    "/opt/homebrew/lib/opensc-pkcs11.so",
+    "/usr/local/lib/opensc-pkcs11.so",
+    "/usr/local/lib/libcastle.dylib",
+)
+
+
+def discover_pkcs11() -> list[str]:
+    """Tìm thư viện PKCS#11 đã cài sẵn trên máy.
+
+    Trên Windows phần mềm ký của CA luôn cài kèm một DLL PKCS#11; dò theo tên
+    thay vì bắt người dùng đi tìm đường dẫn.
+    """
+    if sys.platform != "win32":
+        return [p for p in UNIX_PKCS11_CANDIDATES if Path(p).is_file()]
+
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    return [
+        str(system32 / name)
+        for name in WINDOWS_PKCS11_CANDIDATES
+        if (system32 / name).is_file()
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -91,25 +132,59 @@ class PfxKeySource:
 
 
 class Pkcs11KeySource:
-    """Khoá riêng nằm trên token; token tự băm và tự ký."""
+    """Khoá riêng nằm trên token; token tự băm và tự ký.
+
+    Không bám vào một token cố định: mỗi lần liệt kê hoặc ký đều dò lại slot.
+    Người ký có thể rút token công ty này, cắm token công ty khác giữa chừng
+    mà không phải khởi động lại agent — và cắm cùng lúc nhiều token cũng được.
+    """
 
     label = "USB token (PKCS#11)"
 
-    def __init__(self, module_path: str, pin: str, token_label: str | None = None):
+    def __init__(
+        self, module_path: str, pin: str | None, token_label: str | None = None
+    ):
         import pkcs11  # import trễ: chỉ cần khi dùng token thật
 
-        lib = pkcs11.lib(module_path)
-        tokens = list(lib.get_tokens(token_label=token_label))
-        if not tokens:
-            raise KeySourceError(
-                "Không thấy token nào. Kiểm tra token đã cắm và driver đúng chưa."
-            )
-        self._token = tokens[0]
-        self._pin = pin
-        self.label = f"USB token: {self._token.label.strip()}"
+        self._lib = pkcs11.lib(module_path)
+        self._token_label = token_label
+        self._default_pin = pin
+        # PIN nhớ theo số sê-ri: mỗi token của mỗi công ty một PIN khác nhau.
+        self._pins: dict[str, str] = {}
+        # cert_id -> số sê-ri token đang giữ nó, điền lại mỗi lần liệt kê.
+        self._owner: dict[str, str] = {}
+        self.label = f"USB token (PKCS#11): {Path(module_path).name}"
 
-    def _open(self):
-        return self._token.open(user_pin=self._pin)
+    # ---- dò token --------------------------------------------------------
+
+    def _tokens(self) -> list:
+        """Mọi token đang cắm, dò lại từ đầu mỗi lần gọi."""
+        return list(self._lib.get_tokens(token_label=self._token_label))
+
+    @staticmethod
+    def _serial(token) -> str:
+        return str(token.serial.decode() if isinstance(token.serial, bytes)
+                   else token.serial).strip()
+
+    def _pin_for(self, token) -> str:
+        serial = self._serial(token)
+        if serial in self._pins:
+            return self._pins[serial]
+        if self._default_pin:
+            return self._default_pin
+        pin = getpass.getpass(f"PIN của token {token.label.strip()}: ")
+        self._pins[serial] = pin
+        return pin
+
+    def _open(self, token):
+        from pkcs11.exceptions import PinIncorrect
+
+        try:
+            return token.open(user_pin=self._pin_for(token))
+        except PinIncorrect:
+            # PIN đã nhớ không còn đúng (đổi token cùng sê-ri, hoặc gõ sai)
+            self._pins.pop(self._serial(token), None)
+            raise
 
     @staticmethod
     def _certs_on(session) -> dict[bytes, bytes]:
@@ -120,24 +195,42 @@ class Pkcs11KeySource:
             for obj in session.get_objects({Attribute.CLASS: ObjectClass.CERTIFICATE})
         }
 
+    # ---- giao diện KeySource --------------------------------------------
+
     def certificates(self) -> list[CertEntry]:
         from pkcs11 import Attribute, ObjectClass
 
-        with self._open() as session:
-            with_private_key = {
-                bytes(obj[Attribute.ID])
-                for obj in session.get_objects(
-                    {Attribute.CLASS: ObjectClass.PRIVATE_KEY}
-                )
-            }
-            all_certs = self._certs_on(session)
+        entries: list[CertEntry] = []
+        self._owner.clear()
+        errors: list[str] = []
 
-        chain = list(all_certs.values())
-        return [
-            CertEntry.build(der, chain)
-            for key_id, der in all_certs.items()
-            if key_id in with_private_key
-        ]
+        for token in self._tokens():
+            serial = self._serial(token)
+            try:
+                with self._open(token) as session:
+                    with_private_key = {
+                        bytes(obj[Attribute.ID])
+                        for obj in session.get_objects(
+                            {Attribute.CLASS: ObjectClass.PRIVATE_KEY}
+                        )
+                    }
+                    all_certs = self._certs_on(session)
+            except Exception as exc:
+                # Một token lỗi không được làm hỏng các token còn lại.
+                errors.append(f"{token.label.strip()}: {exc}")
+                continue
+
+            chain = list(all_certs.values())
+            for key_id, der in all_certs.items():
+                if key_id not in with_private_key:
+                    continue
+                entry = CertEntry.build(der, chain)
+                self._owner[entry.cert_id] = serial
+                entries.append(entry)
+
+        if not entries and errors:
+            raise KeySourceError("; ".join(errors))
+        return entries
 
     def sign(
         self, cert_id: str, data: bytes, algo: SigAlgo, params: dict
@@ -145,16 +238,30 @@ class Pkcs11KeySource:
         from pkcs11 import MGF, Attribute, Mechanism, ObjectClass
         from pkcs11.exceptions import MechanismInvalid, MechanismParamInvalid
 
-        target = next((c for c in self.certificates() if c.cert_id == cert_id), None)
-        if target is None:
-            raise KeySourceError("Không tìm thấy chứng thư tương ứng trên token")
-
-        with self._open() as session:
-            key_id = next(
-                kid
-                for kid, der in self._certs_on(session).items()
-                if der == target.cert_der
+        if cert_id not in self._owner:
+            self.certificates()  # token vừa được cắm lại, dò lại danh sách
+        serial = self._owner.get(cert_id)
+        if serial is None:
+            raise KeySourceError(
+                "Chứng thư này không còn trên token nào đang cắm — "
+                "kiểm tra đã cắm đúng token chưa rồi bấm Kết nối lại"
             )
+
+        token = next((t for t in self._tokens() if self._serial(t) == serial), None)
+        if token is None:
+            raise KeySourceError("Token giữ chứng thư này đã bị rút ra")
+
+        with self._open(token) as session:
+            key_id = next(
+                (
+                    kid
+                    for kid, der in self._certs_on(session).items()
+                    if cert_id_for(der) == cert_id
+                ),
+                None,
+            )
+            if key_id is None:
+                raise KeySourceError("Không tìm thấy chứng thư tương ứng trên token")
             private_key = session.get_key(
                 object_class=ObjectClass.PRIVATE_KEY, id=key_id
             )
@@ -288,17 +395,50 @@ def build_source(args: argparse.Namespace) -> KeySource:
                 "--cng chỉ chạy trên Windows. Trên hệ khác dùng --pkcs11."
             )
         return cng.WindowsCertStoreKeySource(
-            store_name=args.cng_store, hardware_only=not args.allow_software_key
+            store_name=args.cng_store, hardware_only=args.hardware_only
         )
 
     if args.pkcs11:
-        pin = args.pin or getpass.getpass("PIN của token: ")
-        return Pkcs11KeySource(args.pkcs11, pin, args.token_label)
+        driver = args.pkcs11
+        if driver == "auto":
+            found = discover_pkcs11()
+            if not found:
+                raise KeySourceError(
+                    "Không tìm thấy thư viện PKCS#11 nào đã cài. "
+                    "Cài phần mềm ký của CA rồi thử lại, hoặc chỉ đúng đường dẫn."
+                )
+            driver = found[0]
+            print(f"Dùng driver tự dò: {driver}")
+            for other in found[1:]:
+                print(f"  (còn có: {other})")
+        # PIN hỏi khi thật sự mở token: mỗi công ty một token, một PIN khác.
+        return Pkcs11KeySource(driver, args.pin, args.token_label)
 
     password = args.password
     if password is None:
         password = getpass.getpass("Mật khẩu PFX: ")
     return PfxKeySource(args.pfx, password)
+
+
+def print_certificates(source: KeySource) -> int:
+    entries = source.certificates()
+    if not entries:
+        print(
+            "Không thấy chứng thư nào có khoá riêng.\n"
+            "  • Token đã cắm chưa?\n"
+            "  • Phần mềm ký của CA đã cài chưa? (nó đăng ký token vào Windows)\n"
+            "  • Với --cng: thử bỏ --hardware-only, hoặc --cng-store MY",
+            file=sys.stderr,
+        )
+        return 1
+    for entry in entries:
+        cert = entry.cert
+        print(f"  • {rfc4514_cn(cert.subject.rfc4514_string())}")
+        print(
+            f"    cấp bởi {rfc4514_cn(cert.issuer.rfc4514_string())}, "
+            f"hạn {cert.not_valid_after_utc:%d/%m/%Y}"
+        )
+    return 0
 
 
 def main() -> int:
@@ -309,11 +449,15 @@ def main() -> int:
     )
     parser.add_argument("--cng-store", default="MY", help="tên store, mặc định MY")
     parser.add_argument(
-        "--allow-software-key",
+        "--hardware-only",
         action="store_true",
-        help="với --cng: nhận cả chứng thư khoá mềm, không chỉ token phần cứng",
+        help="với --cng: chỉ nhận khoá nằm trên token/smartcard, bỏ khoá mềm",
     )
-    parser.add_argument("--pkcs11", metavar="DRIVER", help="đường dẫn thư viện PKCS#11")
+    parser.add_argument(
+        "--pkcs11",
+        metavar="DRIVER",
+        help="đường dẫn thư viện PKCS#11, hoặc 'auto' để tự dò",
+    )
     parser.add_argument("--token-label", help="nhãn token khi cắm nhiều thiết bị")
     parser.add_argument("--pin", help="PIN token (bỏ trống để nhập tay)")
     parser.add_argument("--pfx", help="tệp PFX dùng thay token khi chạy thử")
@@ -324,10 +468,25 @@ def main() -> int:
         action="store_true",
         help="ký không cần xác nhận — chỉ dùng khi chạy thử tự động",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="chỉ liệt kê chứng thư rồi thoát, không kết nối server",
+    )
+    parser.add_argument(
+        "--find-drivers",
+        action="store_true",
+        help="liệt kê thư viện PKCS#11 tìm thấy trên máy rồi thoát",
+    )
     args = parser.parse_args()
 
+    if args.find_drivers:
+        found = discover_pkcs11()
+        print("\n".join(found) if found else "Không tìm thấy thư viện PKCS#11 nào.")
+        return 0 if found else 1
+
     if not (args.cng or args.pkcs11 or args.pfx):
-        parser.error("cần --cng, --pkcs11 <driver> hoặc --pfx <file>")
+        parser.error("cần --cng, --pkcs11 <driver|auto> hoặc --pfx <file>")
 
     try:
         source = build_source(args)
@@ -335,17 +494,18 @@ def main() -> int:
         print(f"Không mở được nguồn khoá: {exc}", file=sys.stderr)
         return 1
 
-    code = args.code or f"{random.randint(0, 999999):06d}"
     print(f"Nguồn khoá: {source.label}")
-    for entry in source.certificates():
-        cert = entry.cert
-        print(f"  • {rfc4514_cn(cert.subject.rfc4514_string())}")
-        print(
-            f"    cấp bởi {rfc4514_cn(cert.issuer.rfc4514_string())}, "
-            f"hạn {cert.not_valid_after_utc:%d/%m/%Y}"
-        )
+    try:
+        status = print_certificates(source)
+    except KeySourceError as exc:
+        print(f"Không đọc được token: {exc}", file=sys.stderr)
+        status = 1
+    if args.list:
+        return status
+    # Chưa cắm token vẫn chạy tiếp: cắm vào rồi bấm "Kết nối" trên web là thấy.
 
-    agent = Agent(source, code, args.auto_approve)
+    agent = Agent(source, args.code or f"{random.randint(0, 999999):06d}",
+                  args.auto_approve)
     try:
         asyncio.run(agent.run(args.server))
     except KeyboardInterrupt:

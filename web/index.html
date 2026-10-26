@@ -79,6 +79,30 @@
           <input id="sign-reason" value="Phê duyệt tài liệu" />
           <label>Nơi ký</label>
           <input id="sign-location" value="Hà Nội" />
+
+          <label>Màu chữ ký</label>
+          <div class="row">
+            <select id="sign-color">
+              <option value="xanh-duong">Xanh dương</option>
+              <option value="xanh-la">Xanh lá</option>
+              <option value="do">Đỏ</option>
+              <option value="den">Đen</option>
+            </select>
+            <label class="checkbox">
+              <input type="checkbox" id="sign-border" />
+              Viền
+            </label>
+          </div>
+
+          <label>Logo / con dấu</label>
+          <div class="row">
+            <label class="button logo-pick">
+              <input type="file" id="logo-input" accept="image/*" hidden />
+              Chọn ảnh
+            </label>
+            <button id="btn-logo-clear">Bỏ logo</button>
+          </div>
+          <div id="logo-status" class="status muted"></div>
           <div id="box-info" class="status muted">
             Chưa chọn vị trí. Bấm “Đặt chữ ký” rồi kéo một khung trên trang.
           </div>

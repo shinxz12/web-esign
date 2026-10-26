@@ -8,6 +8,7 @@ nhận một `invite_token` riêng. Server chỉ chấp nhận chữ ký khi đ�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -24,6 +25,7 @@ DATA_DIR = pathlib.Path(
 ).resolve()
 DOCUMENTS_DIR = DATA_DIR / "documents"
 CERTS_DIR = DATA_DIR / "certs"  # khoá/chứng thư test + CRL phục vụ qua HTTP
+LOGOS_DIR = DATA_DIR / "logos"  # logo/con dấu của người ký, khoá theo token
 
 
 class DocumentNotFound(KeyError):
@@ -140,6 +142,26 @@ class DocumentMeta:
 def init() -> None:
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     CERTS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _logo_path(key: str) -> pathlib.Path:
+    """Tên tệp lấy từ băm của token, không lộ token ra hệ thống tệp."""
+    return LOGOS_DIR / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.img"
+
+
+def save_logo(key: str, data: bytes) -> None:
+    LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+    _logo_path(key).write_bytes(data)
+
+
+def load_logo(key: str) -> bytes | None:
+    path = _logo_path(key)
+    return path.read_bytes() if path.is_file() else None
+
+
+def delete_logo(key: str) -> None:
+    _logo_path(key).unlink(missing_ok=True)
 
 
 def _doc_dir(doc_id: str) -> pathlib.Path:

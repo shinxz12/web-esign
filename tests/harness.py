@@ -354,6 +354,16 @@ def softhsm_module() -> str | None:
     return None
 
 
+def cert_for(client: Client, code: str, subject: str) -> str:
+    """cert_id của chứng thư có CN khớp — dùng khi agent cầm nhiều token."""
+    status, data = client.get(f"/api/agents/{code}/certificates")
+    assert status == 200, data
+    for cert in data["certificates"]:
+        if cert["subject"] == subject:
+            return cert["id"]
+    raise AssertionError(f"không thấy {subject} trong {data['certificates']}")
+
+
 def make_softhsm_token(lab: Lab, pfx: str, label: str) -> dict:
     """Nạp một PFX vào token PKCS#11 ảo. -> env để chạy agent."""
     conf = lab.data / "softhsm" / "softhsm2.conf"
