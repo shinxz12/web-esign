@@ -1,0 +1,10 @@
+# Backend
+pyhanko[opentype]>=0.38,<0.39
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
+# Agent
+cryptography>=42
+websockets>=12
+python-pkcs11>=0.7   # chỉ cần khi ký bằng USB token thật

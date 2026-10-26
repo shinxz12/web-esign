@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Signer — Ký số PDF bằng USB token</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Web&nbsp;Signer</div>
+      <div class="doc-name" id="doc-name">Chưa mở tài liệu</div>
+      <span class="badge" id="doc-status" hidden></span>
+      <div class="topbar-actions">
+        <button id="btn-place" class="primary" disabled>✎ Đặt chữ ký</button>
+        <button id="btn-verify" disabled>Xác thực</button>
+        <a id="btn-download" class="button" hidden>Tải bản đã ký</a>
+      </div>
+    </header>
+
+    <main>
+      <aside class="sidebar" data-owner-only>
+        <label class="upload">
+          <input type="file" id="file-input" accept="application/pdf" hidden />
+          <span>+ Tải PDF lên</span>
+        </label>
+        <h3>Tài liệu</h3>
+        <ul id="doc-list" class="doc-list"></ul>
+      </aside>
+
+      <section class="viewer" id="viewer">
+        <div class="pager" id="pager" hidden>
+          <button id="prev-page">‹</button>
+          <span id="page-info">–</span>
+          <button id="next-page">›</button>
+        </div>
+        <div class="page-wrap" id="page-wrap">
+          <canvas id="pdf-canvas"></canvas>
+          <div class="overlay" id="overlay"></div>
+        </div>
+        <p class="empty" id="empty-state">
+          Chọn hoặc tải lên một tệp PDF để bắt đầu.
+        </p>
+      </section>
+
+      <aside class="panel">
+        <section class="card" id="turn-card" hidden>
+          <h3>Lượt ký của bạn</h3>
+          <div id="turn-info" class="status"></div>
+        </section>
+
+        <section class="card">
+          <h3>1 · Kết nối agent</h3>
+          <p class="hint">
+            Chạy agent trên máy có USB token, rồi nhập mã ghép cặp agent in ra.
+          </p>
+          <div class="row">
+            <input
+              id="agent-code"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="Mã 6 số"
+            />
+            <button id="btn-connect">Kết nối</button>
+          </div>
+          <div id="agent-status" class="status"></div>
+        </section>
+
+        <section class="card">
+          <h3>2 · Chứng thư số</h3>
+          <div id="cert-list" class="cert-list">
+            <p class="hint">Chưa kết nối agent.</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>3 · Thông tin ký</h3>
+          <label>Lý do ký</label>
+          <input id="sign-reason" value="Phê duyệt tài liệu" />
+          <label>Nơi ký</label>
+          <input id="sign-location" value="Hà Nội" />
+          <div id="box-info" class="status muted">
+            Chưa chọn vị trí. Bấm “Đặt chữ ký” rồi kéo một khung trên trang.
+          </div>
+          <button id="btn-sign" class="primary wide" disabled>Ký số</button>
+          <div id="sign-status" class="status"></div>
+          <div id="profile-hint" class="status muted"></div>
+        </section>
+
+        <section class="card" data-owner-only id="signers-card" hidden>
+          <h3>Luồng ký theo thứ tự</h3>
+          <p class="hint">
+            Khai báo ai ký, theo thứ tự nào. Mỗi người nhận một liên kết riêng;
+            server chỉ nhận chữ ký đúng lượt và đúng MST.
+          </p>
+          <div id="signers-rows"></div>
+          <button id="btn-add-signer">+ Thêm người ký</button>
+          <button id="btn-save-signers" class="primary wide">Tạo liên kết ký</button>
+          <div id="signers-status" class="status"></div>
+          <div id="invite-list"></div>
+        </section>
+
+        <section class="card" id="verify-card" hidden>
+          <h3>Kết quả xác thực</h3>
+          <div id="verify-result"></div>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

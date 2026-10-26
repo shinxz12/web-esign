@@ -1,0 +1,369 @@
+:root {
+  --bg: #11141a;
+  --surface: #171b23;
+  --surface-2: #1e2430;
+  --border: #2a3140;
+  --fg: #e6eaf2;
+  --muted: #8d97ab;
+  --accent: #3b82f6;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* .button đặt display:inline-block nên phải thắng lại [hidden] mặc định */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- topbar ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.3px;
+}
+.doc-name {
+  color: var(--muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---------- layout ---------- */
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 210px 1fr 320px;
+  min-height: 0;
+}
+/* Chế độ người ký không có sidebar */
+body.signer-mode main {
+  grid-template-columns: 1fr 320px;
+}
+.sidebar,
+.panel {
+  background: var(--surface);
+  overflow-y: auto;
+  padding: 14px;
+}
+.sidebar {
+  border-right: 1px solid var(--border);
+}
+.panel {
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.viewer {
+  overflow: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---------- controls ---------- */
+button,
+.button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+button:hover:not(:disabled),
+.button:hover {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 550;
+}
+button.primary:disabled {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--fg);
+}
+button.wide {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px;
+}
+button.active {
+  outline: 2px solid var(--accent);
+}
+
+input[type="text"],
+input:not([type]) {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 10px 0 4px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+}
+.row input {
+  flex: 1;
+}
+
+/* ---------- sidebar ---------- */
+.upload {
+  display: block;
+  text-align: center;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+}
+.upload:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+.doc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.doc-list li {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  word-break: break-word;
+}
+.doc-list li:hover {
+  background: var(--surface-2);
+}
+.doc-list li.active {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.doc-list .sig-count {
+  color: var(--success);
+  font-size: 11px;
+}
+
+/* ---------- viewer ---------- */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+.page-wrap {
+  position: relative;
+  line-height: 0;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+canvas {
+  display: block;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+}
+.overlay.placing {
+  cursor: crosshair;
+  background: rgba(59, 130, 246, 0.06);
+}
+.sig-box {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+  pointer-events: none;
+}
+.empty {
+  color: var(--muted);
+  margin-top: 60px;
+}
+
+/* ---------- panel ---------- */
+.card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.card h3 {
+  margin-top: 0;
+}
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.status {
+  font-size: 12px;
+  margin-top: 8px;
+  min-height: 16px;
+  word-break: break-word;
+}
+.status.muted {
+  color: var(--muted);
+}
+.status.ok {
+  color: var(--success);
+}
+.status.err {
+  color: var(--error);
+}
+.status.busy {
+  color: var(--warning);
+}
+
+.cert-list .cert {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+  margin-bottom: 6px;
+  background: var(--bg);
+}
+.cert:hover {
+  border-color: var(--accent);
+}
+.cert.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.cert .cn {
+  font-weight: 600;
+}
+.cert .meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sig-report {
+  border-left: 3px solid var(--border);
+  padding: 6px 0 6px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.sig-report.valid {
+  border-color: var(--success);
+}
+.sig-report.invalid {
+  border-color: var(--error);
+}
+.sig-report.warn {
+  border-color: var(--warning);
+}
+.sig-report .who {
+  font-weight: 600;
+  font-size: 13px;
+}
+.sig-report .line {
+  color: var(--muted);
+}
+
+/* ---------- luồng ký ---------- */
+.badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.signer-row {
+  display: grid;
+  grid-template-columns: 1fr 110px 28px;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.signer-row input {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.signer-del {
+  padding: 0;
+  color: var(--muted);
+}
+
+.invite {
+  border-left: 3px solid var(--warning);
+  padding: 6px 0 8px 10px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.invite.done {
+  border-color: var(--success);
+}
+.invite .who {
+  font-weight: 600;
+}
+.invite input {
+  font-size: 11px;
+  padding: 4px 6px;
+  margin: 4px 0;
+  color: var(--muted);
+}
+.invite .line {
+  color: var(--muted);
+}
