@@ -351,6 +351,20 @@ Sau khi dựng, **bắt buộc** làm hai việc thì mới ký được mức B
 2. Đặt `WEBSIGNER_TSA_URL` trỏ tới TSA của CA. Chưa đặt thì hệ thống tự hạ
    xuống B-B (không dấu thời gian, không LTV).
 
+Chạy sau reverse proxy (Traefik của Coolify, Cloudflare…) thì thêm hai thứ,
+nếu không liên kết kích hoạt thiết bị sẽ mang scheme/host sai và cookie
+`ws_device` không được gắn cờ `Secure`:
+
+1. Env `WEBSIGNER_PUBLIC_URL=https://<domain>` — gốc URL đặt vào `activate_url`.
+2. Uvicorn chạy kèm `--proxy-headers --forwarded-allow-ips '*'` (đã có sẵn
+   trong `CMD` của `Dockerfile`).
+
+Auto deploy trên Coolify khi repo gắn kiểu *public repository*: Coolify không
+tự tạo webhook, phải thêm tay trên GitHub một webhook `push` trỏ tới
+`https://<coolify>/webhooks/source/github/events/manual` với secret lấy ở
+`manual_webhook_secret_github` của ứng dụng. Thiếu webhook thì push bao nhiêu
+lần cũng không có gì chạy.
+
 Backend phải chạy **một worker** cho mỗi phiên ký: trạng thái pha 1 nằm trong
 bộ nhớ tiến trình (xem phần Giới hạn).
 
