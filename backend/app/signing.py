@@ -100,6 +100,12 @@ _FONT_CANDIDATES = (
 # mục mã nguồn chỉ đọc, còn /data mới là volume ghi được.
 FONT_CACHE_DIR = DATA_DIR / ".fontcache"
 
+# Tăng số này mỗi khi đổi cách biến đổi font, nếu không bản cache cũ trong
+# volume sẽ được dùng tiếp và bản sửa không bao giờ có hiệu lực.
+#   v1: scale về 1000 upem
+#   v2: + bỏ bytecode hinting (hinting cũ nuốt chấm chữ "i" và dấu ":")
+FONT_TRANSFORM_VERSION = 2
+
 
 class SigningError(RuntimeError):
     """Lỗi nghiệp vụ khi ký — trả về client dưới dạng 4xx."""
@@ -124,7 +130,9 @@ def normalize_upem(font_path: str) -> str:
     hình chữ ký bị giãn và tràn khỏi khung. Scale font về 1000 upem làm hai
     đơn vị trùng nhau, nên ``/W`` thành đúng.
 
-    Bản đã scale được cache theo (đường dẫn, kích thước, mtime).
+    Bản đã scale được cache theo (đường dẫn, kích thước, mtime, phiên bản xử
+    lý). Phải có phiên bản: đổi cách xử lý mà khoá cache không đổi thì bản cũ
+    còn nằm trong volume sẽ được dùng tiếp và bản sửa không bao giờ có tác dụng.
     """
     from fontTools.ttLib import TTFont
     from fontTools.ttLib.scaleUpem import scale_upem
@@ -132,9 +140,13 @@ def normalize_upem(font_path: str) -> str:
     source = pathlib.Path(font_path)
     stat = source.stat()
     cache_key = hashlib.sha1(
-        f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode()
+        f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+        f":v{FONT_TRANSFORM_VERSION}".encode()
     ).hexdigest()[:16]
-    cached = FONT_CACHE_DIR / f"{source.stem}-{cache_key}-upem1000.ttf"
+    cached = (
+        FONT_CACHE_DIR
+        / f"{source.stem}-{cache_key}-upem1000-v{FONT_TRANSFORM_VERSION}.ttf"
+    )
     if cached.is_file():
         return str(cached)
 
