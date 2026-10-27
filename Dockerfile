@@ -38,7 +38,10 @@ RUN useradd --system --uid 10001 websigner \
  && chown -R websigner:websigner /data
 USER websigner
 
-VOLUME ["/data"]
+# Không khai VOLUME: PDF nằm trên R2, dữ liệu trong PostgreSQL; /data chỉ còn
+# font cache + trust store tự sinh lại. Chạy không có R2 thì tự gắn volume
+# vào /data (compose.yaml làm sẵn), nếu không mỗi lần deploy là một volume
+# ẩn danh mới bị bỏ lại trên đĩa.
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
