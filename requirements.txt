@@ -4,6 +4,9 @@ pyhanko[opentype,image-support]>=0.38,<0.39
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
+psycopg[binary,pool]>=3.2   # PostgreSQL: tài khoản, tài liệu, nhật ký, hàng đợi
+aiohttp>=3.9                # gửi webhook (pyHanko cũng dùng để tải CRL/OCSP)
+boto3>=1.34                 # lưu PDF trên Cloudflare R2 (S3) khi đặt CLOUDFLARE_R2_BUCKET
 
 # Agent
 cryptography>=42

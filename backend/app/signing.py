@@ -45,7 +45,7 @@ from pyhanko.stamp import TextStamp, TextStampStyle
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from . import trust
-from .store import DATA_DIR
+from .config import DATA_DIR
 
 logger = logging.getLogger("websigner.signing")
 
@@ -200,7 +200,7 @@ class PreparedSignature:
     Giữ luôn ``PdfTBSDocument`` và luồng ghi của pyHanko thay vì chuỗi byte:
     chúng mang theo chỉ dẫn hậu ký (DSS, dấu thời gian tài liệu) cần cho
     B-LT/B-LTA. Hệ quả: hai pha phải nằm trong cùng một tiến trình, đúng như
-    cách ``api_sign`` điều phối.
+    cách ``signflow.sign`` điều phối.
     """
 
     field_name: str
@@ -536,6 +536,20 @@ def incremental_writer(pdf_bytes: bytes) -> IncrementalPdfFileWriter:
     if hybrid:
         logger.warning("Tệp dùng hybrid cross-reference; nới strict để ký được")
     return IncrementalPdfFileWriter(io.BytesIO(pdf_bytes), strict=not hybrid)
+
+
+def free_field_name(pdf_bytes: bytes) -> str:
+    """``SigN`` đầu tiên chưa có trong tệp.
+
+    Tệp khách mang tới có thể đã được ký ở Adobe hay phần mềm của CA với ô
+    ``Sig1``; đặt trùng tên thì pyHanko từ chối vì ô đó đã có chữ ký.
+    """
+    reader = PdfFileReader(io.BytesIO(pdf_bytes), strict=not has_hybrid_xrefs(pdf_bytes))
+    taken = {name for name, _, _ in fields.enumerate_sig_fields(reader)}
+    n = 1
+    while f"Sig{n}" in taken:
+        n += 1
+    return f"Sig{n}"
 
 
 async def prepare(

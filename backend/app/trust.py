@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import pathlib
@@ -12,7 +13,7 @@ from asn1crypto import pem
 from asn1crypto import x509 as asn1_x509
 from pyhanko_certvalidator import ValidationContext
 
-from .store import DATA_DIR, REPO_ROOT
+from .config import DATA_DIR, REPO_ROOT
 
 logger = logging.getLogger("websigner.trust")
 
@@ -78,7 +79,38 @@ def seed_trust_store(trust_dir: pathlib.Path | None = None) -> int:
     return copied
 
 
+def fingerprint(trust_dir: pathlib.Path | None = None) -> str:
+    """Dấu vân tay của thư mục trust: tên, cỡ, mtime của từng tệp.
+
+    Rẻ (chỉ ``stat``), nên gọi được ở mỗi lần ký/xác thực để biết có phải đọc
+    lại chứng thư hay không, và làm khoá cache kết quả xác thực.
+    """
+    directory = trust_dir or TRUST_DIR
+    digest = hashlib.sha256(str(directory).encode())
+    if directory.is_dir():
+        for path in sorted(directory.iterdir()):
+            if path.suffix.lower() in CERT_SUFFIXES:
+                stat = path.stat()
+                digest.update(f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}\n".encode())
+    return digest.hexdigest()[:16]
+
+
+_material_cache: dict[pathlib.Path, tuple[str, TrustMaterial]] = {}
+
+
 def load_trust_material(trust_dir: pathlib.Path | None = None) -> TrustMaterial:
+    """Như ``_scan_trust_dir`` nhưng chỉ đọc lại khi thư mục trust đổi."""
+    directory = trust_dir or TRUST_DIR
+    current = fingerprint(directory)
+    cached = _material_cache.get(directory)
+    if cached is not None and cached[0] == current:
+        return cached[1]
+    material = _scan_trust_dir(directory)
+    _material_cache[directory] = (current, material)
+    return material
+
+
+def _scan_trust_dir(directory: pathlib.Path) -> TrustMaterial:
     """Phân loại chứng thư trong thư mục trust.
 
     CA tự ký -> trust anchor. CA do CA khác cấp -> trung gian, chỉ dùng để nối
@@ -86,7 +118,6 @@ def load_trust_material(trust_dir: pathlib.Path | None = None) -> TrustMaterial:
     cảnh báo: để một leaf lọt vào đây là nó tự làm anchor cho chính mình,
     chuỗi dài 1, không ai kiểm tra thu hồi.
     """
-    directory = trust_dir or TRUST_DIR
     roots: list[asn1_x509.Certificate] = []
     intermediates: list[asn1_x509.Certificate] = []
     if not directory.is_dir():

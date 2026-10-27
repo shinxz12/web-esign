@@ -1,12 +1,15 @@
-"""Bất biến dễ hỏng âm thầm mà không làm chữ ký báo lỗi ngay.
+"""Bất biến dễ hỏng âm thầm mà không làm chữ ký hay API báo lỗi ngay.
 
-Ba nhóm ở đây đều từng là nguồn lỗi thật trong dự án này.
+Chạy không cần server hay cơ sở dữ liệu.
 """
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
+import shutil
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.utils import (
@@ -18,7 +21,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "agent"))
 
-from app import signing, store, trust  # noqa: E402
+from app import audit, config, documents, plans, security, signing, trust, webhooks  # noqa: E402
+from app.errors import ApiError  # noqa: E402
 from keysource import KeySourceError, ecdsa_raw_to_der, pss_salt_length  # noqa: E402
 
 
@@ -76,65 +80,150 @@ def test_salt_lay_dung_gia_tri_server_gui() -> None:
 # --------------------------------------------------------------------------
 
 
-def slot(order: int, name: str, tax_code: str | None = None) -> store.SignerSlot:
-    return store.SignerSlot(
-        order=order, name=name, tax_code=tax_code, invite_token=f"tok{order}"
-    )
+def recipient(order: int, name: str, tax_code: str | None = None) -> dict:
+    return {"id": f"rcp_{name}", "routing_order": order, "name": name, "tax_code": tax_code,
+            "status": "pending", "role": "signer"}
+
+
+def in_progress(expires_at: datetime | None = None) -> dict:
+    return {"status": "in_progress", "expires_at": expires_at}
 
 
 def test_mst_quyet_dinh_khi_duoc_khai_bao() -> None:
-    s = slot(0, "Nguyễn Văn A", "0101234567")
-    assert s.accepts("CONG TY KHAC HOAN TOAN", "0101234567")
-    assert not s.accepts("NGUYEN VAN A", "0107654321")
-    assert not s.accepts("NGUYEN VAN A", None)
+    r = recipient(1, "Nguyễn Văn A", "0101234567")
+    assert documents.identity_matches(r, "CONG TY KHAC HOAN TOAN", "0101234567")
+    assert not documents.identity_matches(r, "NGUYEN VAN A", "0107654321")
+    assert not documents.identity_matches(r, "NGUYEN VAN A", None)
 
 
-def test_khong_co_mst_thi_so_ten_bo_dau() -> None:
-    s = slot(0, "Nguyễn Văn A")
-    assert s.accepts("NGUYEN VAN A", None)
-    assert s.accepts("nguyen  van   a", None)
-    assert not s.accepts("NGUYEN VAN B", None)
+def test_khong_co_mst_thi_so_ten_bo_dau_ca_chu_d() -> None:
+    # "Đ" không tách thành D + dấu khi chuẩn hoá NFD: phải xử lý riêng.
+    r = recipient(1, "Đặng Văn Đức")
+    assert documents.identity_matches(r, "DANG VAN DUC", None)
+    assert documents.identity_matches(r, "dang  van   duc", None)
+    assert not documents.identity_matches(r, "DANG VAN DUNG", None)
 
 
-def doc(*slots: store.SignerSlot) -> store.DocumentMeta:
-    return store.DocumentMeta(
-        id="a" * 16, name="x.pdf", created_at="2026-01-01T00:00:00+00:00",
-        owner_token="owner", signers=list(slots),
-    )
+def test_cung_so_thu_tu_thi_ky_song_song_nhom_sau_doi_nhom_truoc() -> None:
+    a, b, c = recipient(1, "A"), recipient(2, "B"), recipient(2, "C")
+    everyone, doc = [a, b, c], in_progress()
+    assert documents.turn(doc, a, everyone)["can_act"]
+    assert documents.turn(doc, b, everyone) == {"can_act": False, "reason": "not_your_turn", "waiting_for": ["A"]}
+
+    a["status"] = "approved"
+    assert documents.turn(doc, b, everyone)["can_act"] and documents.turn(doc, c, everyone)["can_act"]
+
+    c["status"] = "signed"
+    assert documents.turn(doc, c, everyone)["reason"] == "already_acted"
+    assert documents.turn(doc, b, everyone)["can_act"]
+    assert documents.active_order(everyone) == 2
 
 
-def test_trang_thai_chay_theo_dung_thu_tu() -> None:
-    a, b = slot(0, "A", "1"), slot(1, "B", "2")
-    d = doc(a, b)
-    assert d.status == "chua_bat_dau"
-    assert d.next_slot is a
-
-    a.signed_at = "2026-01-01T00:00:00+00:00"
-    assert d.status == "cho_ky"
-    assert d.next_slot is b
-
-    b.signed_at = "2026-01-01T00:01:00+00:00"
-    assert d.status == "hoan_tat"
-    assert d.next_slot is None
+def test_qua_han_la_chan_ngay_ca_khi_worker_chua_quet() -> None:
+    a = recipient(1, "A")
+    expired = in_progress(datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert documents.turn(expired, a, [a])["reason"] == "document_expired"
 
 
-def test_khong_khai_luong_thi_ky_tu_do() -> None:
-    assert doc().status == "tu_do"
+def test_nguoi_duyet_khong_co_o_ky() -> None:
+    with pytest.raises(ValueError):
+        documents.RecipientSpec(name="Kế toán", role="approver", field={"page": 0, "box": [0, 0, 165, 90]})
 
 
-def test_lien_ket_sai_bi_tu_choi() -> None:
-    d = doc(slot(0, "A", "1"))
-    assert d.slot_for_invite("tok0").order == 0
-    with pytest.raises(store.WorkflowError):
-        d.slot_for_invite("tok-khong-ton-tai")
+# --------------------------------------------------------------------------
+# Nhật ký kiểm toán: sửa, xoá, chèn đều làm đứt chuỗi
+# --------------------------------------------------------------------------
 
 
-def test_to_dict_khong_lo_bi_mat() -> None:
-    d = doc(slot(0, "A", "1"))
-    public = d.to_dict()
-    assert "owner_token" not in public
-    assert "invite_token" not in public["signers"][0]
-    assert "invite_token" in d.to_dict(redact_invites=False)["signers"][0]
+def _chain(*payloads: str) -> list[dict]:
+    rows, prev = [], None
+    for seq, canonical in enumerate(payloads, start=1):
+        digest = audit.chain_hash(prev, canonical)
+        rows.append({"seq": seq, "canonical": canonical, "prev_hash": prev, "hash": digest})
+        prev = digest
+    return rows
+
+
+def test_chuoi_bam_phat_hien_sua_xoa() -> None:
+    rows = _chain('{"type":"created"}', '{"type":"signed","by":"A"}', '{"type":"completed"}')
+    assert audit.verify_chain(rows) == (True, None)
+
+    edited = [dict(r) for r in rows]
+    edited[1]["canonical"] = '{"type":"signed","by":"KE GIAN"}'
+    assert audit.verify_chain(edited) == (False, 2)
+
+    # Sửa cả băm của dòng đó vẫn lộ ở dòng kế tiếp.
+    edited[1]["hash"] = audit.chain_hash(edited[1]["prev_hash"], edited[1]["canonical"])
+    assert audit.verify_chain(edited) == (False, 3)
+
+    assert audit.verify_chain([rows[0], rows[2]]) == (False, 3)  # xoá dòng giữa
+
+
+# --------------------------------------------------------------------------
+# Webhook không được thành cửa SSRF vào mạng nội bộ
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://hooks.example.com/ws",  # không phải https
+        "https://127.0.0.1/h",
+        "https://10.0.0.5/h",
+        "https://169.254.169.254/latest/meta-data",  # metadata đám mây
+        "https://[::1]/h",
+        "https://[::ffff:127.0.0.1]/h",  # IPv4 đội lốt IPv6
+        "https://localhost/h",
+        "https://user:pw@hooks.example.com/h",
+    ],
+)
+def test_url_webhook_noi_bo_bi_tu_choi(url: str, monkeypatch) -> None:
+    monkeypatch.setattr(config, "WEBHOOK_ALLOW_PRIVATE", False)
+    with pytest.raises(ApiError):
+        webhooks.validate_url(url)
+
+
+def test_ten_mien_cong_cong_tro_ve_ip_noi_bo_bi_chan_luc_ket_noi(monkeypatch) -> None:
+    """DNS rebinding: URL hợp lệ lúc đăng ký, lúc gửi lại trỏ vào mạng nội bộ."""
+    from aiohttp.resolver import ThreadedResolver
+
+    async def rebinding(self, host, port=0, family=0):
+        return [{"hostname": host, "host": "10.1.2.3", "port": port, "family": 2, "proto": 0, "flags": 0}]
+
+    monkeypatch.setattr(ThreadedResolver, "resolve", rebinding)
+    assert webhooks.validate_url("https://hooks.example.com/ws") == "https://hooks.example.com/ws"
+
+    async def resolve():
+        return await webhooks.PublicOnlyResolver().resolve("hooks.example.com", 443)
+
+    with pytest.raises(OSError):
+        asyncio.run(resolve())
+
+
+# --------------------------------------------------------------------------
+# Mật khẩu, giới hạn tần suất, hạn mức
+# --------------------------------------------------------------------------
+
+
+def test_mat_khau_sai_mot_ky_tu_cung_bi_tu_choi() -> None:
+    encoded = security.hash_password_sync("mat-khau-dai-123")
+    assert security.verify_password_sync("mat-khau-dai-123", encoded)
+    assert not security.verify_password_sync("mat-khau-dai-124", encoded)
+    assert not security.verify_password_sync("mat-khau-dai-123", None)
+    assert encoded != security.hash_password_sync("mat-khau-dai-123"), "phải có salt riêng"
+
+
+def test_gioi_han_tan_suat_cho_phep_dot_bien_roi_chan() -> None:
+    limiter = security.RateLimiter()
+    results = [limiter.hit("k", per_minute=60, burst=3) for _ in range(4)]
+    assert results[:3] == [None, None, None]
+    assert results[3] is not None and 0 < results[3] <= 1.0
+
+
+def test_thang_tinh_han_muc_theo_gio_viet_nam() -> None:
+    # 17:30 UTC ngày 31/10 đã là 00:30 ngày 1/11 ở Việt Nam.
+    assert plans.current_period(datetime(2026, 10, 31, 17, 30, tzinfo=timezone.utc)) == "2026-11"
+    assert plans.current_period(datetime(2026, 10, 31, 16, 59, tzinfo=timezone.utc)) == "2026-10"
 
 
 # --------------------------------------------------------------------------
@@ -195,6 +284,20 @@ def test_nap_mac_dinh_chi_khi_thu_muc_con_rong(tmp_path: pathlib.Path) -> None:
         path.unlink()
     assert trust.seed_trust_store(target) == 0
     assert len(list(target.iterdir())) == 2
+
+
+def test_them_ca_vao_trust_store_co_hieu_luc_khong_can_khoi_dong_lai(tmp_path: pathlib.Path) -> None:
+    """Chứng thư CA được cache theo dấu vân tay thư mục — thêm tệp phải đọc lại."""
+    seed = ROOT / "trust"
+    if not seed.is_dir():
+        pytest.skip("không có thư mục trust/ mặc định")
+    shutil.copyfile(seed / "mic-national-root-ca.cer", tmp_path / "mic.cer")
+    assert len(trust.load_trust_material(tmp_path).roots) == 1
+    before = trust.fingerprint(tmp_path)
+
+    shutil.copyfile(seed / "vietnam-national-root-ca-2014-2039.cer", tmp_path / "vn.cer")
+    assert trust.fingerprint(tmp_path) != before
+    assert len(trust.load_trust_material(tmp_path).roots) == 2
 
 
 

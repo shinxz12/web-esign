@@ -1,0 +1,1441 @@
+/**
+ * Giao diện Bảng điều khiển Web Signer (Dashboard CSS)
+ */
+
+/* ---------- Cấu trúc Layout Tổng thể ---------- */
+#app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.dashboard-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.dashboard-sidebar {
+  width: 220px;
+  flex: none;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 10px;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.sidebar-nav-item:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+}
+
+.sidebar-nav-item.active {
+  color: #fff;
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-nav-item .nav-icon {
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+}
+
+main.dashboard-main {
+  display: block;
+  grid-template-columns: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+  min-width: 0;
+  background: var(--bg);
+}
+
+/* ---------- Topbar ---------- */
+.topbar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  z-index: 10;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar .brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.5px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.topbar-org-badge {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-user-name {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--fg);
+}
+
+/* ---------- Khởi động & Màn hình Auth ---------- */
+.boot-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  gap: 12px;
+}
+
+.boot-logo {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.auth-shell {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  width: 100%;
+}
+
+main.auth-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  grid-template-columns: none;
+  width: 100%;
+  height: 100%;
+}
+
+.auth-container {
+  width: 100%;
+  max-width: 440px;
+}
+
+.auth-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.auth-header h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-links {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.auth-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.auth-links a:hover {
+  text-decoration: underline;
+}
+
+.invite-badge-box {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.invite-org-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 4px 0;
+}
+
+/* ---------- Thành phần Form chung ---------- */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.form-group input,
+.form-group textarea,
+.form-group select {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.form-error {
+  color: var(--error);
+  font-size: 13px;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  margin: 4px 0;
+}
+
+.form-success {
+  color: var(--success);
+  font-size: 13px;
+  padding: 8px 12px;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid var(--success);
+  border-radius: var(--radius);
+  margin: 4px 0;
+}
+
+.warning-banner {
+  color: var(--warning);
+  font-size: 13px;
+  padding: 10px 14px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  line-height: 1.5;
+}
+
+/* ---------- Header Trang & Controls ---------- */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 16px;
+}
+
+.page-title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.breadcrumb {
+  margin-bottom: 16px;
+}
+
+.breadcrumb a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.breadcrumb a:hover {
+  color: var(--accent);
+}
+
+.table-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  width: 280px;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.filter-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.filter-tab {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.filter-tab:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.filter-tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ---------- Bảng dữ liệu (Data Table) ---------- */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+
+.data-table th {
+  padding: 12px 14px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.data-row {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.data-row:hover {
+  background: var(--surface-2);
+}
+
+.table-responsive {
+  overflow-x: auto;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.table-subtext {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.doc-title-link {
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.doc-title-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.badge-draft {
+  background: #2a3140;
+  color: #94a3b8;
+}
+
+.badge-in_progress {
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.badge-completed {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.badge-declined {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.badge-voided {
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.badge-expired {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.badge-owner {
+  background: rgba(168, 85, 247, 0.15);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+/* ---------- Nút bấm & Tiện ích ---------- */
+button.danger,
+.button.danger {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+button.danger:hover:not(:disabled),
+.button.danger:hover {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}
+
+button.small,
+.button.small {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.content-card {
+  padding: 24px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 16px;
+}
+
+.empty-state-card {
+  padding: 32px;
+  text-align: center;
+}
+
+/* ---------- Khu vực Tải PDF lên (#/documents/new) ---------- */
+.file-drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 36px 20px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: all 0.2s ease;
+}
+
+.file-drop-zone:hover,
+.file-drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.drop-icon {
+  font-size: 36px;
+  margin-bottom: 8px;
+}
+
+.drop-prompt {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.drop-hint {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.selected-file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.btn-remove-file {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.btn-remove-file:hover {
+  color: var(--error);
+}
+
+/* ---------- Trình soạn thảo & Xem chi tiết (Editor/Viewer) ---------- */
+.editor-topbar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex: none;
+}
+
+.editor-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.editor-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.editor-header-title {
+  font-weight: 650;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-layout {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  height: calc(100vh - 104px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-sidebar {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editor-card {
+  padding: 16px;
+}
+
+.editor-section-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--fg);
+}
+
+/* ---------- Trình xem PDF (Viewer) ---------- */
+.viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0d1117;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  z-index: 5;
+}
+
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-label {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 48px;
+  text-align: center;
+}
+
+.select-box-size {
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
+.pages {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 0 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  min-height: 0;
+}
+
+.page {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  flex: none;
+}
+
+.page canvas {
+  display: block;
+}
+
+.page-label {
+  position: absolute;
+  top: 6px;
+  right: -32px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.overlay.placing {
+  cursor: crosshair;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+/* ---------- Ô ký (Signature Box) ---------- */
+.sig-box {
+  position: absolute;
+  cursor: move;
+  user-select: none;
+  border: 2px solid;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  font-size: 11px;
+  z-index: 10;
+}
+
+.sig-box.dragging {
+  cursor: grabbing;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  opacity: 0.9;
+}
+
+.sig-box.readonly {
+  cursor: default;
+}
+
+.sig-box.readonly.signed {
+  border-style: solid;
+}
+
+.sig-box.readonly.pending {
+  border-style: dashed;
+}
+
+.sig-box-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sig-box-sub {
+  font-size: 10px;
+  opacity: 0.85;
+  display: block;
+}
+
+.sig-grip {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+.sig-box-del {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--error);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  padding: 0;
+  line-height: 1;
+}
+
+.place-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  background: rgba(23, 27, 35, 0.92);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 12px;
+  color: var(--fg);
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 20;
+}
+
+/* ---------- Danh sách Người nhận & Timeline ---------- */
+.recipient-edit-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid;
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface-2);
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.recipient-edit-card.selected {
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.recipient-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.recipient-num-tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.recipient-order-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.btn-icon-del {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.btn-icon-del:hover {
+  color: var(--error);
+}
+
+.recipient-field-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-clear-field {
+  background: transparent;
+  border: none;
+  color: var(--error);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-clear-field:hover {
+  text-decoration: underline;
+}
+
+/* Side panel tabs */
+.detail-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.detail-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: center;
+}
+
+.detail-tab:hover {
+  color: var(--fg);
+}
+
+.detail-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.detail-meta-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.timeline-card {
+  padding: 12px;
+  font-size: 13px;
+}
+
+.timeline-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timeline-order-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.timeline-item-meta {
+  font-size: 12px;
+  margin: 4px 0 6px;
+}
+
+.sig-details-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  font-size: 12px;
+}
+
+.sig-details-title {
+  font-weight: 600;
+  color: var(--success);
+  margin-bottom: 4px;
+}
+
+.sig-details-row {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.timeline-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Nhật ký kiểm toán & Hash Chain ---------- */
+.chain-status-banner {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.chain-status-banner.valid {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid var(--success);
+  color: var(--success);
+}
+
+.chain-status-banner.broken {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error);
+  color: var(--error);
+}
+
+.head-hash-box {
+  font-size: 11px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  word-break: break-all;
+}
+
+.hash-text {
+  font-family: monospace;
+  color: var(--accent);
+}
+
+.audit-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.audit-event-item {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.audit-event-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.audit-seq {
+  font-family: monospace;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.audit-type {
+  color: var(--fg);
+}
+
+.audit-time {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.audit-event-data {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: var(--surface);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.audit-event-data pre {
+  margin: 0;
+  font-size: 11px;
+}
+
+.audit-hash {
+  font-family: monospace;
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+/* ---------- Nhà phát triển (Developers) ---------- */
+.dev-section-card {
+  padding: 24px;
+}
+
+.section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.webhook-card {
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.webhook-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.webhook-url-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.webhook-url {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.webhook-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.webhook-desc {
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+
+.webhook-events-row {
+  margin-top: 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.events-checkbox-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+}
+
+.code-block {
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-family: monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  line-height: 1.5;
+  color: #c9d1d9;
+}
+
+/* ---------- Gói & Sử dụng (Billing) ---------- */
+.billing-card {
+  padding: 24px;
+}
+
+.billing-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.usage-meters-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.meter-box {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+
+.meter-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.meter-numbers {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.meter-used {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.meter-limit {
+  font-size: 14px;
+}
+
+.progress-bar-bg {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-fill.warn {
+  background: var(--warning);
+}
+
+.progress-bar-fill.danger {
+  background: var(--error);
+}
+
+.limits-tags-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.limit-tag {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.plans-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.plan-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.plan-card.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.plan-card.popular {
+  border-color: var(--success);
+}
+
+.plan-card-badge {
+  position: absolute;
+  top: -10px;
+  right: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+}
+
+.plan-card-badge.popular {
+  background: var(--success);
+  color: #06240f;
+}
+
+.plan-card-name {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.plan-card-docs {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+
+.plan-features-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  flex: 1;
+}
+
+.contact-info-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+/* ---------- Tài khoản (Account) ---------- */
+.profile-details-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ---------- Hộp thoại Modal (Modal Dialog) ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 580px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  color: var(--fg);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  font-size: 14px;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 900px) {
+  .dashboard-sidebar {
+    width: 64px;
+  }
+  .sidebar-nav-item span:not(.nav-icon) {
+    display: none;
+  }
+  .sidebar-nav-item {
+    justify-content: center;
+    padding: 10px;
+  }
+  .editor-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .editor-sidebar {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  .usage-meters-grid {
+    grid-template-columns: 1fr;
+  }
+}

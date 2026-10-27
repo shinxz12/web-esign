@@ -1,0 +1,39 @@
+# Chạy trọn nền tảng: PostgreSQL + backend/giao diện.
+#   WEBSIGNER_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
+# Đặt thêm WEBSIGNER_PUBLIC_URL, WEBSIGNER_TSA_URL, WEBSIGNER_SMTP_URL khi chạy thật.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: websigner
+      POSTGRES_USER: websigner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-websigner}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U websigner -d websigner"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WEBSIGNER_DATABASE_URL: postgresql://websigner:${POSTGRES_PASSWORD:-websigner}@db:5432/websigner
+      WEBSIGNER_SECRET_KEY: ${WEBSIGNER_SECRET_KEY:?đặt WEBSIGNER_SECRET_KEY (>= 32 ký tự)}
+      WEBSIGNER_PUBLIC_URL: ${WEBSIGNER_PUBLIC_URL:-}
+      WEBSIGNER_TSA_URL: ${WEBSIGNER_TSA_URL:-}
+      WEBSIGNER_SMTP_URL: ${WEBSIGNER_SMTP_URL:-}
+      WEBSIGNER_MAIL_FROM: ${WEBSIGNER_MAIL_FROM:-Web Signer <no-reply@localhost>}
+    ports:
+      - "8000:8000"
+    volumes:
+      - appdata:/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  appdata:

@@ -15,23 +15,26 @@ Ba bí mật, ba vai khác nhau:
     nằm trong cookie ``ws_device``. Chứng minh "trình duyệt này đã được máy X
     xác nhận". Thu hồi riêng được, không lộ ``device_token`` ra trình duyệt.
 
-Chỉ lưu bản băm của token: đọc được tệp registry cũng không giả mạo được agent.
+Chỉ lưu SHA-256 của token: đọc được cơ sở dữ liệu cũng không giả mạo được agent.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import pathlib
+import logging
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
-from .store import DATA_DIR
+from . import db
+from .config import DATA_DIR
+from .security import token_hash
 
-REGISTRY = DATA_DIR / "devices.json"
+logger = logging.getLogger("websigner.devices")
+
+LEGACY_REGISTRY = DATA_DIR / "devices.json"
 
 # Đủ cho trình duyệt mặc định khởi động nguội; ngắn hơn thì máy chậm sẽ hỏng.
 TICKET_TTL_SECONDS = 120.0
@@ -49,98 +52,49 @@ class Device:
     id: str
     name: str
     platform: str
-    created_at: str
-    last_seen: str
+    created_at: datetime
+    last_seen: datetime
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "platform": self.platform,
-            "created_at": self.created_at,
-            "last_seen": self.last_seen,
+            "created_at": self.created_at.isoformat(timespec="seconds"),
+            "last_seen": self.last_seen.isoformat(timespec="seconds"),
         }
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def _device(row: dict) -> Device:
+    return Device(row["id"], row["name"], row["platform"], row["created_at"], row["last_seen"])
 
 
-def _digest(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
-def _load() -> dict[str, Any]:
-    if not REGISTRY.is_file():
-        return {"devices": {}, "browsers": {}}
-    data = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    data.setdefault("devices", {})
-    data.setdefault("browsers", {})
-    return data
-
-
-def _save(data: dict[str, Any]) -> None:
-    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(REGISTRY)
-
-
-def _device(device_id: str, record: dict[str, Any]) -> Device:
-    return Device(
-        id=device_id,
-        name=record.get("name") or "agent",
-        platform=record.get("platform") or "?",
-        created_at=record.get("created_at") or "",
-        last_seen=record.get("last_seen") or "",
-    )
-
-
-def register(token: str, name: str, platform: str) -> Device:
+async def register(token: str, name: str, platform: str) -> Device:
     """Ghi danh máy chạy agent. Gọi lại với cùng token thì cập nhật, không nhân bản."""
-    data = _load()
-    token_hash = _digest(token)
-    for device_id, record in data["devices"].items():
-        if secrets.compare_digest(record.get("token_hash", ""), token_hash):
-            record.update(name=name, platform=platform, last_seen=_now())
-            _save(data)
-            return _device(device_id, record)
-
-    device_id = secrets.token_hex(8)
-    record = {
-        "token_hash": token_hash,
-        "name": name,
-        "platform": platform,
-        "created_at": _now(),
-        "last_seen": _now(),
-    }
-    data["devices"][device_id] = record
-    _save(data)
-    return _device(device_id, record)
+    row = await db.fetchone(
+        "INSERT INTO devices (id, token_hash, name, platform) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (token_hash) DO UPDATE SET name = EXCLUDED.name, "
+        "platform = EXCLUDED.platform, last_seen = now() RETURNING *",
+        (secrets.token_hex(8), token_hash(token), name, platform),
+    )
+    return _device(row)
 
 
-def by_token(token: str) -> Device:
-    data = _load()
-    token_hash = _digest(token)
-    for device_id, record in data["devices"].items():
-        if secrets.compare_digest(record.get("token_hash", ""), token_hash):
-            return _device(device_id, record)
-    raise DeviceError("Thiết bị chưa đăng ký hoặc đã bị thu hồi")
+async def by_token(token: str) -> Device:
+    row = await db.fetchone("SELECT * FROM devices WHERE token_hash = %s", (token_hash(token),))
+    if row is None:
+        raise DeviceError("Thiết bị chưa đăng ký hoặc đã bị thu hồi")
+    return _device(row)
 
 
-def by_id(device_id: str) -> Device | None:
-    record = _load()["devices"].get(device_id)
-    return _device(device_id, record) if record else None
+async def by_id(device_id: str) -> Device | None:
+    row = await db.fetchone("SELECT * FROM devices WHERE id = %s", (device_id,))
+    return _device(row) if row else None
 
 
-def touch(device_id: str) -> None:
-    """Ghi nhận agent vừa kết nối — để trang quản lý biết máy nào còn sống."""
-    data = _load()
-    record = data["devices"].get(device_id)
-    if record is None:
-        return
-    record["last_seen"] = _now()
-    _save(data)
+async def touch(device_id: str) -> None:
+    """Ghi nhận agent vừa kết nối — để biết máy nào còn sống."""
+    await db.execute("UPDATE devices SET last_seen = now() WHERE id = %s", (device_id,))
 
 
 def issue_ticket(device_id: str) -> str:
@@ -151,14 +105,14 @@ def issue_ticket(device_id: str) -> str:
     return ticket
 
 
-def claim_ticket(ticket: str) -> str:
+async def claim_ticket(ticket: str) -> str:
     """-> device_id. Vé bị xoá ngay cả khi lỗi: dùng một lần là một lần."""
     _expire_tickets()
     entry = _tickets.pop(ticket, None)
     if entry is None:
         raise DeviceError("Liên kết kích hoạt đã hết hạn hoặc đã dùng rồi")
     device_id, _ = entry
-    if by_id(device_id) is None:
+    if await by_id(device_id) is None:
         raise DeviceError("Thiết bị đã bị thu hồi")
     return device_id
 
@@ -170,38 +124,68 @@ def _expire_tickets() -> None:
             _tickets.pop(ticket, None)
 
 
-def bind_browser(browser_token: str, device_id: str) -> None:
-    data = _load()
-    data["browsers"][_digest(browser_token)] = {
-        "device_id": device_id,
-        "activated_at": _now(),
-    }
-    _save(data)
+async def bind_browser(browser_token: str, device_id: str) -> None:
+    await db.execute(
+        "INSERT INTO device_browsers (token_hash, device_id) VALUES (%s, %s) "
+        "ON CONFLICT (token_hash) DO UPDATE SET device_id = EXCLUDED.device_id, activated_at = now()",
+        (token_hash(browser_token), device_id),
+    )
 
 
-def browser_device(browser_token: str | None) -> Device | None:
+async def browser_device(browser_token: str | None) -> Device | None:
     """Thiết bị mà trình duyệt này đã kích hoạt, None nếu chưa/đã bị thu hồi."""
     if not browser_token:
         return None
-    binding = _load()["browsers"].get(_digest(browser_token))
-    return by_id(binding["device_id"]) if binding else None
+    row = await db.fetchone(
+        "SELECT d.* FROM device_browsers b JOIN devices d ON d.id = b.device_id "
+        "WHERE b.token_hash = %s",
+        (token_hash(browser_token),),
+    )
+    return _device(row) if row else None
 
 
-def unbind_browser(browser_token: str | None) -> None:
-    if not browser_token:
-        return
-    data = _load()
-    if data["browsers"].pop(_digest(browser_token), None) is not None:
-        _save(data)
+async def unbind_browser(browser_token: str | None) -> None:
+    if browser_token:
+        await db.execute("DELETE FROM device_browsers WHERE token_hash = %s", (token_hash(browser_token),))
 
 
-def forget(device_id: str) -> None:
-    """Thu hồi máy: mọi trình duyệt đã kích hoạt theo nó mất hiệu lực ngay."""
-    data = _load()
-    data["devices"].pop(device_id, None)
-    data["browsers"] = {
-        key: value
-        for key, value in data["browsers"].items()
-        if value.get("device_id") != device_id
-    }
-    _save(data)
+async def forget(device_id: str) -> None:
+    """Thu hồi máy: mọi trình duyệt đã kích hoạt theo nó mất hiệu lực ngay (cascade)."""
+    await db.execute("DELETE FROM devices WHERE id = %s", (device_id,))
+
+
+async def import_legacy_registry() -> int:
+    """Chuyển ``devices.json`` của bản chạy bằng tệp sang cơ sở dữ liệu, một lần.
+
+    Bản cũ lưu SHA-256 hex của cùng token, nên agent đã cài vẫn nối được mà
+    không phải ghi danh lại. Xong thì đổi tên tệp để không nhập lần nữa.
+    """
+    if not LEGACY_REGISTRY.is_file():
+        return 0
+    data = json.loads(LEGACY_REGISTRY.read_text(encoding="utf-8"))
+    imported = 0
+    async with db.transaction() as conn:
+        for device_id, record in (data.get("devices") or {}).items():
+            cur = await conn.execute(
+                "INSERT INTO devices (id, token_hash, name, platform, created_at, last_seen) "
+                "VALUES (%s, %s, %s, %s, COALESCE(%s::timestamptz, now()), COALESCE(%s::timestamptz, now())) "
+                "ON CONFLICT DO NOTHING",
+                (
+                    device_id,
+                    bytes.fromhex(record["token_hash"]),
+                    record.get("name") or "agent",
+                    record.get("platform") or "?",
+                    record.get("created_at") or None,
+                    record.get("last_seen") or None,
+                ),
+            )
+            imported += cur.rowcount
+        for browser_hash, binding in (data.get("browsers") or {}).items():
+            await conn.execute(
+                "INSERT INTO device_browsers (token_hash, device_id) "
+                "SELECT %s, id FROM devices WHERE id = %s ON CONFLICT DO NOTHING",
+                (bytes.fromhex(browser_hash), binding.get("device_id")),
+            )
+    LEGACY_REGISTRY.rename(LEGACY_REGISTRY.with_suffix(".json.imported"))
+    logger.info("Đã chuyển %d thiết bị từ %s sang cơ sở dữ liệu", imported, LEGACY_REGISTRY.name)
+    return imported

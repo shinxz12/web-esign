@@ -1,11 +1,17 @@
 # Web Signer
 
-Ký số PDF bằng USB token qua trình duyệt: mở tài liệu, bấm chọn vị trí ký
-(ô ký cỡ chuẩn, kéo để chỉnh), chọn chứng thư trên token, bấm ký. Kết quả là
-PDF có chữ ký PAdES mà Adobe Reader xác thực được.
+Nền tảng ký số hợp đồng điện tử (eContract) bằng USB token, bán cho doanh
+nghiệp dưới dạng dịch vụ: hệ thống của khách (ERP, CRM, phần mềm bán hàng…)
+gọi API bằng **khoá bí mật** để tạo tài liệu, khai người ký/người duyệt theo
+thứ tự, nhận webhook khi từng người ký xong; người ký mở liên kết riêng, cắm
+token, bấm ký. Kết quả là PDF có chữ ký PAdES mà Adobe Reader xác thực được.
 
-Hỗ trợ ký nhiều người theo thứ tự, đóng dấu thời gian (TSA) và lưu trữ dài hạn
-(LTV): PAdES B-B / B-T / B-LT / B-LTA.
+- Nhiều tổ chức (tenant), mỗi tổ chức có thành viên, vai trò, khoá API,
+  webhook, gói dịch vụ và hạn mức theo tháng.
+- Luồng ký: người ký + người duyệt, thứ tự tuần tự hoặc song song, ô ký đặt
+  sẵn, từ chối, huỷ, hết hạn, nhắc lại, cấp lại liên kết.
+- Nhật ký kiểm toán dạng chuỗi băm cho từng tài liệu; xác thực chữ ký tích hợp.
+- Đóng dấu thời gian (TSA) và lưu trữ dài hạn (LTV): PAdES B-B / B-T / B-LT / B-LTA.
 
 ## Nguyên lý: hash-then-sign
 
@@ -69,23 +75,170 @@ sổ agent — nó mở vé mới. Không dùng được đường đó thì cò
 làm dự phòng, nằm trong phần thu gọn ở bước 1.
 
 Thu hồi: nút “Quên máy này” trên web gỡ cookie của đúng trình duyệt đang dùng;
-xoá hẳn thiết bị trong `data/devices.json` thì mọi trình duyệt đã kích hoạt
+xoá hẳn thiết bị (bảng `devices` trong PostgreSQL) thì mọi trình duyệt đã kích hoạt
 theo nó mất hiệu lực cùng lúc.
 
 Vì mọi trình duyệt đã kích hoạt đều dùng được token, **lớp chặn thật là hộp
 thoại xác nhận trên agent + PIN của token** — không phải mã ghép cặp.
 
-## Luồng ký và phân quyền
+## Mô hình nền tảng
 
-Không có bảng người dùng. Danh tính người ký **chính là chứng thư số**:
+```mermaid
+flowchart LR
+  ERP["Hệ thống của khách<br/>(khoá API)"] -- "/v1 REST" --> BE
+  ADM["Quản trị viên tổ chức<br/>(giao diện /)"] -- "cookie phiên + CSRF" --> BE
+  SGN["Người ký / người duyệt<br/>(/s/&lt;token&gt;)"] -- "/api/sign" --> BE
+  AG["Agent + USB token<br/>(máy người ký)"] -- "WebSocket ra ngoài" --> BE
+  BE["Backend FastAPI"] --- PG[("PostgreSQL")]
+  BE --- FS[("PDF theo revision<br/>/data/documents")]
+  BE -- "webhook ký HMAC" --> ERP
+  BE -- "email mời / hoàn tất" --> SGN
+```
 
-- chủ tài liệu giữ cookie `ws_owner`, chỉ thấy tài liệu của mình;
-- chủ khai báo thứ tự người ký (tên + MST), hệ thống sinh cho mỗi người một
-  liên kết `/s/<invite_token>`;
-- server chỉ nhận chữ ký khi **đúng lượt** và **đúng chứng thư** — so MST khi
-  có khai báo, so tên đã bỏ dấu khi không.
+| Ai | Xác thực | Làm được gì |
+|---|---|---|
+| Hệ thống tích hợp | `Authorization: Bearer wsk_live_…` | API tài liệu `/v1`, lượt dùng |
+| Thành viên tổ chức | cookie `ws_session` + header `X-CSRF-Token` | như trên, qua giao diện |
+| Quản trị tổ chức (owner/admin) | phiên đăng nhập | + khoá API, webhook, thành viên |
+| Người nhận | liên kết `/s/<token>` riêng từng người | xem, ký/duyệt/từ chối đúng lượt |
+| Agent | `device_token` / mã ghép cặp | ký 32 byte bản băm, có hộp thoại xác nhận |
 
-Tài liệu không khai luồng thì chủ tự ký tự do.
+Khoá API cố ý **không** gọi được nhóm quản trị: lộ khoá không kéo theo việc kẻ
+gian tự cấp khoá mới, đổi webhook hay mời người vào tổ chức.
+
+Danh tính người ký vẫn **là chứng thư số**: khai MST thì MST trên chứng thư
+phải khớp, không khai thì so tên đã bỏ dấu (kể cả `Đ`). Có liên kết mà cầm
+token của người khác thì bị chặn (403 `wrong_signer`) trước khi token ký.
+
+### Vòng đời tài liệu
+
+```mermaid
+stateDiagram-v2
+  [*] --> draft: POST /v1/documents
+  draft --> in_progress: send
+  in_progress --> completed: mọi người nhận xong
+  in_progress --> declined: một người từ chối
+  in_progress --> expired: quá expires_at
+  draft --> voided: void
+  in_progress --> voided: void
+```
+
+Người nhận có `order`: nhóm số nhỏ nhất còn người chưa xong là nhóm đang tới
+lượt; **cùng số thì ký song song**. Người duyệt (`approver`) bấm duyệt, không
+cần token. Email mời chỉ gửi cho nhóm đang tới lượt.
+
+Hai người cùng nhóm ký một lúc không ghi đè nhau: mỗi tài liệu có khoá giữ suốt
+prepare → token → finalize → ghi; người đến sau nhận 409
+`signing_in_progress`. Khi ghi, revision còn được so lại trong transaction.
+
+## API cho hệ thống tích hợp
+
+Tài liệu đầy đủ (OpenAPI) ở `/docs`. Lỗi luôn có dạng
+`{"detail": "<thông điệp>", "code": "<mã ổn định>"}` — rẽ nhánh theo `code`.
+
+```bash
+KEY=wsk_live_...   # tạo ở mục Nhà phát triển trên giao diện, chỉ hiện một lần
+
+# Tạo và gửi luôn: người duyệt trước, rồi hai bên ký song song, ô ký đặt sẵn
+curl -H "Authorization: Bearer $KEY" -H "Idempotency-Key: order-1001" \
+  -F file=@hop-dong.pdf \
+  -F 'data={"title":"HĐ 1001","external_ref":"ORDER-1001","expires_in_days":14,"send":true,
+     "recipients":[
+       {"name":"Kế toán trưởng","email":"kt@a.vn","role":"approver","order":1},
+       {"name":"Nguyễn Văn A","email":"a@a.vn","tax_code":"0101234567","order":2,
+        "field":{"page":1,"box":[65,383,230,473]}},
+       {"name":"Trần Thị Bích","email":"b@b.vn","tax_code":"0107654321","order":2}]}' \
+  https://ky.example.vn/v1/documents
+```
+
+Phản hồi có `recipients[].signing_url` — gửi email (máy chủ có SMTP thì tự
+gửi) hoặc nhúng thẳng vào hệ thống của bạn. Toạ độ ô ký theo điểm PDF, gốc
+dưới-trái, `page` đếm từ 0.
+
+| Endpoint | Việc |
+|---|---|
+| `POST /v1/documents` | tải PDF + `data` JSON; `send:false` để giữ bản nháp |
+| `GET /v1/documents?status=&q=&external_ref=&cursor=` | danh sách, phân trang con trỏ |
+| `GET /v1/documents/{id}` | chi tiết, kèm `signing_url` của người còn chờ |
+| `PATCH /v1/documents/{id}` · `PUT …/recipients` · `POST …/send` | sửa nháp, gửi |
+| `POST …/void` · `DELETE /v1/documents/{id}` | huỷ, xoá (không xoá khi đang ký) |
+| `GET …/file?revision=&download=true` | PDF bản mới nhất hoặc revision bất kỳ |
+| `GET …/verify` | xác thực chữ ký (cache theo revision + trust store) |
+| `GET …/audit` | nhật ký chuỗi băm: `chain_valid`, `head` |
+| `POST …/recipients/{rid}/remind` · `…/rotate-link` | nhắc lại, thu hồi liên kết cũ |
+| `GET /v1/usage` | gói, hạn mức, lượt dùng 12 tháng |
+
+`Idempotency-Key` (24 giờ): gọi lại cùng khoá trả đúng tài liệu cũ kèm
+`Idempotent-Replayed: true`; cùng khoá khác nội dung là 422.
+
+### Webhook
+
+Sự kiện: `document.sent|completed|declined|voided|expired`,
+`recipient.viewed|signed|approved|declined`. Thân là
+`{"id","type","created_at","data":{"document":…,"recipient":…}}` — không
+bao giờ chứa liên kết ký. Kiểm chữ ký trước khi tin:
+
+```python
+import hashlib, hmac
+
+def verify(secret: str, header: str, raw_body: bytes) -> bool:
+    parts = dict(p.split("=", 1) for p in header.split(","))  # WebSigner-Signature
+    expected = hmac.new(secret.encode(), parts["t"].encode() + b"." + raw_body,
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, parts["v1"])  # và từ chối nếu t quá cũ
+```
+
+Sự kiện được ghi vào hàng đợi **cùng transaction** với thay đổi nghiệp vụ,
+gửi lại giãn dần 10 giây → 12 giờ (8 lần, ~21 giờ), rồi đánh dấu thất bại —
+bấm “Gửi lại” trên giao diện. Webhook chỉ gọi HTTPS tới địa chỉ công cộng; IP
+được kiểm **lúc kết nối** nên DNS rebinding không lọt vào mạng nội bộ.
+
+### Gói dịch vụ
+
+| Gói | Tài liệu/tháng | API/phút | Tệp tối đa | Người nhận/tài liệu | Thành viên | Khoá API | Webhook |
+|---|---|---|---|---|---|---|---|
+| `free` | 20 | 60 | 10 MB | 5 | 3 | 2 | 1 |
+| `business` | 1000 | 600 | 25 MB | 20 | 25 | 10 | 5 |
+| `enterprise` | không giới hạn | 3000 | 50 MB | 50 | không giới hạn | 50 | 20 |
+
+Hạn mức tài liệu trừ nguyên tử lúc tạo, theo tháng giờ Việt Nam; vượt là 402
+`quota_exceeded`. Chưa nối cổng thanh toán: người vận hành đổi gói bằng CLI.
+
+### Quản trị nền tảng (CLI)
+
+```bash
+cd backend
+../.venv/bin/python -m app.admin orgs                                   # tổ chức, gói, lượt dùng
+../.venv/bin/python -m app.admin create-org "Công ty A" a@a.vn "Nguyễn Văn A" --plan business
+../.venv/bin/python -m app.admin set-plan org_1234abcd5678ef90 enterprise
+../.venv/bin/python -m app.admin import-legacy org_1234abcd5678ef90    # tài liệu của bản lưu bằng tệp
+```
+
+Nâng cấp từ bản lưu bằng tệp: `devices.json` tự chuyển vào cơ sở dữ liệu lần
+khởi động đầu (agent đã cài nối lại được ngay). Tài liệu cũ thuộc cookie ẩn
+danh nên không tự có chủ — `import-legacy` đưa chúng vào tổ chức được chọn;
+liên kết mời cũ hết hiệu lực, lấy liên kết mới từ API.
+
+## Bảo mật và hiệu năng
+
+| Mối lo | Cách xử lý |
+|---|---|
+| Lộ cơ sở dữ liệu | Chỉ lưu SHA-256 của phiên, khoá API, liên kết ký, token thiết bị; mật khẩu scrypt. Liên kết ký và secret webhook là HMAC(khoá server, id, phiên bản) — tính lại được, không lưu bản rõ |
+| Lẫn dữ liệu giữa tổ chức | Mọi truy vấn lọc `org_id`; sai tổ chức trả 404 như không tồn tại |
+| CSRF | Cookie `SameSite=Lax` + `X-CSRF-Token` bắt buộc cho mọi request thay đổi dữ liệu bằng cookie |
+| Dò mật khẩu / mã ghép cặp | Giới hạn tần suất theo IP + email; băm giả khi email không tồn tại để thời gian phản hồi như nhau |
+| SSRF qua webhook | Chỉ HTTPS công cộng, resolver chặn IP nội bộ lúc kết nối, không theo redirect |
+| Sửa lịch sử | Nhật ký chuỗi băm; hệ thống tích hợp giữ `head` để phát hiện cả việc viết lại toàn bộ |
+| Script bên thứ ba | pdf.js đóng gói tại `web/vendor`, CSP `script-src 'self'`, `frame-ancestors 'none'` |
+| Token trong URL | `Referrer-Policy: no-referrer`; access log che `/s/…`, `/api/sign/…`, `?t=…` |
+| Request khổng lồ | Chặn theo `Content-Length` trước khi multipart ghi ra đĩa; trần theo gói |
+
+Hiệu năng: truy vấn có chỉ mục cho mọi đường nóng (danh sách theo tổ chức +
+trạng thái, tra liên kết ký theo băm), danh sách nạp người nhận bằng một truy
+vấn `ANY()` (không N+1), phân trang con trỏ. PDF phục vụ thẳng từ đĩa. Xác
+thực chữ ký chạy ngoài event loop và cache theo revision + trust store; trust
+store chỉ đọc lại khi thư mục đổi. Webhook/email gửi nền, song song, lấy việc
+bằng `FOR UPDATE SKIP LOCKED`.
 
 ## Chạy thử
 
@@ -93,6 +246,7 @@ Tài liệu không khai luồng thì chủ tự ký tự do.
 # 1. Môi trường
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements-dev.txt
+createdb websigner                       # PostgreSQL 14+
 
 # 2. Chứng thư test + CRL + PDF mẫu
 ./scripts/make_test_certs.sh
@@ -101,8 +255,9 @@ mkdir -p data/samples && .venv/bin/python scripts/make_sample_pdf.py data/sample
 # 3. TSA test (bỏ qua nếu dùng TSA thật)
 .venv/bin/python scripts/tsa_server.py --port 8080
 
-# 4. Backend
-cd backend && WEBSIGNER_TSA_URL=http://127.0.0.1:8080/tsa \
+# 4. Backend — bảng tự tạo lần chạy đầu (backend/app/migrations)
+cd backend && WEBSIGNER_DATABASE_URL=postgresql://127.0.0.1:5432/websigner \
+  WEBSIGNER_TSA_URL=http://127.0.0.1:8080/tsa \
   ../.venv/bin/python -m uvicorn app.main:app --port 8000
 
 # 5. Agent (cửa sổ khác) — mặc định agent trỏ về wss://web-signer.btngoc.io.vn,
@@ -111,28 +266,29 @@ cd backend && WEBSIGNER_TSA_URL=http://127.0.0.1:8080/tsa \
   --pfx data/certs/signer-a.pfx --password 123456
 ```
 
-Agent tự ghi danh máy rồi mở trình duyệt mặc định đúng một lần để nhận cookie
-thiết bị. Từ đó mở http://127.0.0.1:8000 ở bất kỳ tab nào là **tự thấy token
-đang cắm** — không nhập mã, không bấm “Kết nối”. Tải PDF lên → chọn chứng thư
-→ “Đặt chữ ký” rồi bấm vào chỗ muốn ký → “Ký số”.
+Mở http://127.0.0.1:8000 → đăng ký tổ chức → tải PDF lên, thêm người nhận,
+đặt ô ký, gửi → mở liên kết ký của người nhận. Agent đã kích hoạt trình duyệt
+thì trang ký **tự thấy token đang cắm** — không nhập mã, không bấm “Kết nối”.
 
 Ký một phát qua API để kiểm tra nhanh:
 
 ```bash
-./scripts/smoke.sh <mã-ghép-cặp>
+WEBSIGNER_API_KEY=wsk_live_... ./scripts/smoke.sh <mã-ghép-cặp>
 ```
 
 Test:
 
 ```bash
-.venv/bin/python -m pytest -q                  # tất cả (~8s)
-.venv/bin/python -m pytest -q -m "not e2e"     # chỉ bất biến, không cần server
+.venv/bin/python -m pytest -q                  # tất cả (~30s)
+.venv/bin/python -m pytest -q -m "not e2e"     # chỉ bất biến, không cần server/DB
 .venv/bin/python -m pytest tests/test_e2e.py -v
 ```
 
-Nhóm `e2e` tự dựng môi trường riêng trong thư mục tạm: cấp CA mới, phát hành
-CRL, chạy TSA, chạy backend và agent thật, nạp USB token ảo SoftHSM2 — rồi ký,
-xác thực và thử phá. Không mock gì, không đụng vào `data/` của bạn.
+Nhóm `e2e` tự dựng môi trường riêng: cơ sở dữ liệu PostgreSQL tạm (tạo qua
+`WEBSIGNER_TEST_ADMIN_DSN`, mặc định `postgresql://127.0.0.1:5432/postgres`,
+xoá khi xong), CA mới, CRL, TSA, hộp thư SMTP và người nhận webhook trong tiến
+trình test, backend và agent thật, USB token ảo SoftHSM2 — rồi ký, xác thực và
+thử phá. Không mock gì, không đụng vào `data/` của bạn.
 
 ### Agent có giao diện (.exe cho người dùng cuối)
 
@@ -291,11 +447,19 @@ Hai điểm dễ sai, đã xử lý:
 | Đường dẫn | Vai trò |
 |---|---|
 | `backend/app/signing.py` | lõi hai pha: `prepare` (băm) / `finalize` (CMS, TSA, DSS) |
+| `backend/app/signflow.py` | một lượt ký: khoá theo tài liệu, pha 1 → agent → pha 2 → ghi |
+| `backend/app/documents.py` | tài liệu, người nhận, lượt ký, chuyển trạng thái, xác thực có cache |
+| `backend/app/audit.py` | nhật ký kiểm toán chuỗi băm |
+| `backend/app/accounts.py` · `auth.py` | tổ chức, người dùng, phiên, thành viên, khoá API; ai đang gọi |
+| `backend/app/webhooks.py` · `mailer.py` · `worker.py` | outbox webhook/email, chống SSRF, việc nền |
+| `backend/app/plans.py` | gói dịch vụ, hạn mức, đếm lượt dùng |
+| `backend/app/api_*.py` · `main.py` | HTTP: `/v1`, `/api` quản trị, `/api/sign`, agent; middleware bảo mật |
+| `backend/app/db.py` · `migrations/` | pool PostgreSQL, migration SQL thuần |
+| `backend/app/storage.py` | PDF theo revision trên đĩa |
+| `backend/app/admin.py` | CLI quản trị nền tảng |
 | `backend/app/verify.py` | xác thực chữ ký, LTV, phân tích thay đổi sau khi ký |
 | `backend/app/trust.py` | trust anchor và ngữ cảnh kiểm tra thu hồi |
 | `backend/app/relay.py` | hub WebSocket, tìm agent theo thiết bị hoặc mã 6 số |
-| `backend/app/store.py` | tài liệu theo revision, luồng ký, quyền sở hữu |
-| `backend/app/main.py` | HTTP API + phục vụ giao diện |
 | `backend/app/devices.py` | thiết bị đã cài agent + trình duyệt đã kích hoạt |
 | `agent/keysource.py` | giao kèo chung cho mọi nguồn khoá |
 | `agent/agent.py` | client relay (CLI), nguồn khoá PKCS#11 / PFX |
@@ -303,22 +467,35 @@ Hai điểm dễ sai, đã xử lý:
 | `agent/config.py` | `~/.websigner/agent.json`: danh tính máy + tuỳ chọn |
 | `agent/autostart.py` | chạy cùng hệ điều hành (Run key / LaunchAgent / XDG) |
 | `agent/cng.py` | nguồn khoá Windows Certificate Store (CNG + CSP) |
-| `web/` | viewer pdf.js cuộn liên tục, đặt ô ký, panel xác thực |
+| `web/index.html` · `dashboard.js` | giao diện quản trị tổ chức: tài liệu, đặt ô ký, nhà phát triển, thành viên, gói |
+| `web/sign.html` · `sign.js` | trang ký của người nhận: viewer pdf.js, ký/duyệt/từ chối, xác thực |
+| `web/vendor/pdfjs` | pdf.js 4.10.38 đóng gói sẵn (không tải từ CDN) |
 | `scripts/` | chứng thư test, PDF mẫu, TSA test, SoftHSM2, build .exe |
 | `tests/` | bất biến + e2e (tự dựng CA, CRL, TSA, backend, agent, token ảo) |
-| `Dockerfile` | ảnh triển khai backend + giao diện |
+| `Dockerfile` · `compose.yaml` | ảnh triển khai backend + giao diện; kèm PostgreSQL |
 
 ## Biến môi trường
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `WEBSIGNER_DATA` | `<repo>/data` | thư mục dữ liệu |
+| `WEBSIGNER_DATABASE_URL` | `postgresql://127.0.0.1:5432/websigner` | PostgreSQL 14+ |
+| `WEBSIGNER_SECRET_KEY` | sinh vào `<data>/secret.key` | ≥ 32 ký tự; sinh liên kết ký và secret webhook — **đổi là mọi liên kết cũ chết** |
+| `WEBSIGNER_DATA` | `<repo>/data` | thư mục dữ liệu (PDF, font cache) |
 | `WEBSIGNER_TRUST_DIR` | `<data>/trust` | **chỉ chứa chứng thư CA** |
 | `WEBSIGNER_TSA_URL` | — | URL TSA RFC 3161; chưa đặt thì chỉ ký được B-B |
 | `WEBSIGNER_PROFILE` | `B-LT` nếu có TSA, nếu không `B-B` | `B-B`/`B-T`/`B-LT`/`B-LTA` |
 | `WEBSIGNER_PREFER_PSS` | tắt | dùng RSA-PSS thay PKCS#1 v1.5 |
 | `WEBSIGNER_FONT` | tự dò | font TTF cho hình chữ ký (cần glyph tiếng Việt) |
-| `WEBSIGNER_PUBLIC_URL` | suy từ request | gốc URL đặt vào liên kết kích hoạt thiết bị |
+| `WEBSIGNER_PUBLIC_URL` | suy từ request | gốc URL đặt vào liên kết ký, email, kích hoạt thiết bị |
+| `WEBSIGNER_SMTP_URL` | — | `smtp://host:25`, `smtp+starttls://user:pass@host:587`, `smtps://…:465`; chưa đặt thì không gửi email |
+| `WEBSIGNER_MAIL_FROM` | `Web Signer <no-reply@localhost>` | người gửi email |
+| `WEBSIGNER_ALLOW_SIGNUP` | bật | tắt thì chỉ tạo tổ chức bằng CLI |
+| `WEBSIGNER_WEBHOOK_ALLOW_PRIVATE` | tắt | cho webhook gọi http/IP nội bộ — **chỉ dùng khi phát triển** |
+| `WEBSIGNER_FRAME_ANCESTORS` | — | origin được nhúng trang ký `/s/…` vào iframe |
+| `WEBSIGNER_DB_POOL_SIZE` | 10 | số kết nối tối đa tới PostgreSQL |
+| `CLOUDFLARE_R2_BUCKET` | — | đặt thì PDF lưu trên R2 thay vì `<data>/documents` |
+| `CLOUDFLARE_R2_ACCOUNT_ID` · `…_ACCESS_KEY_ID` · `…_SECRET_ACCESS_KEY` | — | thông tin truy cập R2 |
+| `WEBSIGNER_R2_PREFIX` | `web-signer/` | tiền tố khoá trong bucket (bucket dùng chung được) |
 | `WEBSIGNER_AGENT_HOME` | `~/.websigner` | thư mục cấu hình phía agent |
 
 Hai cái bẫy đã gặp, ghi lại để đừng vấp lại:
@@ -334,12 +511,14 @@ Hai cái bẫy đã gặp, ghi lại để đừng vấp lại:
 ## Triển khai
 
 `Dockerfile` chỉ đóng gói backend + giao diện. Agent chạy trên máy người ký,
-không bao giờ nằm trong container.
+không bao giờ nằm trong container. `compose.yaml` dựng kèm PostgreSQL:
 
 ```bash
-docker build -t web-signer .
-docker run -p 8000:8000 -v websigner-data:/data web-signer
+WEBSIGNER_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 ```
+
+Sao lưu **cả ba**: cơ sở dữ liệu, nơi chứa PDF (R2 hoặc volume `/data`) và
+`WEBSIGNER_SECRET_KEY`.
 
 Ảnh cài sẵn DejaVu Sans để hình chữ ký có dấu tiếng Việt, chạy bằng user
 không phải root, và ghi mọi thứ vào `/data` (volume duy nhất cần gắn).
@@ -366,8 +545,9 @@ tự tạo webhook, phải thêm tay trên GitHub một webhook `push` trỏ t�
 `manual_webhook_secret_github` của ứng dụng. Thiếu webhook thì push bao nhiêu
 lần cũng không có gì chạy.
 
-Backend phải chạy **một worker** cho mỗi phiên ký: trạng thái pha 1 nằm trong
-bộ nhớ tiến trình (xem phần Giới hạn).
+Backend phải chạy **một tiến trình**: relay agent và trạng thái pha 1 nằm
+trong bộ nhớ (xem phần Giới hạn). Hàng đợi webhook/email và mọi dữ liệu khác
+đã ở PostgreSQL.
 
 ## Giới hạn hiện tại
 
@@ -375,11 +555,14 @@ bộ nhớ tiến trình (xem phần Giới hạn).
   trong môi trường phát triển. Phần PKCS#11 (kể cả nhiều token cùng lúc), PFX,
   luồng ký, TSA, LTV đều đã chạy end-to-end.
 - Băm cố định SHA-256; chưa có SHA-384/512 hay EdDSA.
-- `find_by_invite()` quét toàn bộ thư mục tài liệu. Đủ ở quy mô này; lên cơ sở
-  dữ liệu thì thay bằng chỉ mục.
-- Hai pha ký phải nằm trong cùng một tiến trình backend (`PreparedSignature`
-  giữ luồng ghi của pyHanko). Muốn chạy nhiều worker thì phải chuyển trạng thái
-  pha 1 ra kho dùng chung.
+- Hai pha ký và relay agent phải nằm trong cùng một tiến trình backend
+  (`PreparedSignature` giữ luồng ghi của pyHanko; agent nối WebSocket vào một
+  tiến trình cụ thể). Muốn chạy nhiều bản thì phải định tuyến agent qua kênh
+  chung (ví dụ PostgreSQL `LISTEN/NOTIFY`) và chuyển trạng thái pha 1 ra ngoài.
+  Giới hạn tần suất cũng nằm trong bộ nhớ tiến trình vì lý do đó.
+- Chưa nối cổng thanh toán: đổi gói bằng `python -m app.admin set-plan`.
+- Chưa có mẫu tài liệu (template) và đặt ô ký theo chữ neo trong PDF: hệ thống
+  tích hợp gửi toạ độ ô ký.
 - `data/certs/*.pfx` là chứng thư tự ký để chạy thử. Muốn Adobe báo hợp lệ phải
   import `data/trust/demo-ca.crt` làm trust anchor.
 - Agent hiển thị tên tài liệu và hash để người ký xác nhận, nhưng không tự dựng

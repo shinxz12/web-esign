@@ -1,27 +1,39 @@
-"""Dựng môi trường thật cho test end-to-end: CA, CRL, TSA, backend, agent.
+"""Dựng môi trường thật cho test end-to-end: PostgreSQL, CA, CRL, TSA, SMTP,
+người nhận webhook, backend, agent.
 
 Không mock gì cả. Chứng thư do openssl cấp, CRL phục vụ qua HTTP, dấu thời gian
-do TSA RFC 3161 cấp, agent nói chuyện với backend qua WebSocket thật.
+do TSA RFC 3161 cấp, agent nói chuyện với backend qua WebSocket thật, email đi
+qua SMTP thật tới một hộp thư trong tiến trình test, webhook tới một HTTP server
+thật. Mỗi phiên test dùng một cơ sở dữ liệu tạm, xoá khi xong.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.cookiejar
 import json
 import os
 import pathlib
+import secrets
 import shutil
 import socket
+import socketserver
 import subprocess
-import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "bin" / "python"
 STARTUP_TIMEOUT = 40.0
+# Kết nối quản trị để tạo/xoá cơ sở dữ liệu tạm cho mỗi phiên test.
+ADMIN_DSN = os.environ.get("WEBSIGNER_TEST_ADMIN_DSN", "postgresql://127.0.0.1:5432/postgres")
+PASSWORD = "mat-khau-thu-nghiem"
 
 
 def free_port() -> int:
@@ -30,7 +42,7 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def wait_until(predicate, what: str, timeout: float = STARTUP_TIMEOUT) -> None:
+def wait_until(predicate, what: str, timeout: float = STARTUP_TIMEOUT, interval: float = 0.15) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -38,7 +50,7 @@ def wait_until(predicate, what: str, timeout: float = STARTUP_TIMEOUT) -> None:
                 return
         except Exception:
             pass
-        time.sleep(0.15)
+        time.sleep(interval)
     raise TimeoutError(f"Quá thời gian chờ: {what}")
 
 
@@ -48,74 +60,221 @@ def port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def postgres_available() -> bool:
+    try:
+        import psycopg
+
+        with psycopg.connect(ADMIN_DSN, connect_timeout=3):
+            return True
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------------------
-# HTTP client giữ cookie — mỗi phiên là một "người dùng" khác nhau
+# HTTP client: cookie + CSRF (giao diện) hoặc khoá API (hệ thống tích hợp)
 # --------------------------------------------------------------------------
 
 
 class Client:
-    def __init__(self, base: str):
+    def __init__(self, base: str, *, api_key: str | None = None):
         self.base = base
+        self.api_key = api_key
+        self.csrf: str | None = None
+        self.me: dict | None = None
+        # Message của http.client: tra header không phân biệt hoa thường.
+        self.last_headers = None
         self._opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
         )
 
-    def request(self, method: str, path: str, body=None, upload: bytes | None = None):
+    def request(
+        self,
+        method: str,
+        path: str,
+        body=None,
+        upload: bytes | None = None,
+        form: dict | None = None,
+        headers: dict | None = None,
+        filename: str = "tai-lieu.pdf",
+    ):
         """-> (http_status, payload). Lỗi HTTP trả về như dữ liệu, không raise."""
         url = self.base + path
+        hdrs = dict(headers or {})
+        data = None
         if upload is not None:
-            boundary = "----websigner-e2e"
-            head = (
-                f"--{boundary}\r\n"
-                'Content-Disposition: form-data; name="file"; filename="tai-lieu.pdf"\r\n'
-                "Content-Type: application/pdf\r\n\r\n"
-            ).encode()
-            payload = head + upload + f"\r\n--{boundary}--\r\n".encode()
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                method=method,
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            boundary = "----websigner-" + uuid.uuid4().hex
+            parts = [
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+                for name, value in (form or {}).items()
+            ]
+            parts.append(
+                (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode()
+                + upload
+                + b"\r\n"
             )
+            data = b"".join(parts) + f"--{boundary}--\r\n".encode()
+            hdrs["Content-Type"] = f"multipart/form-data; boundary={boundary}"
         elif body is not None:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(body).encode(),
-                method=method,
-                headers={"Content-Type": "application/json"},
-            )
-        else:
-            req = urllib.request.Request(url, method=method)
+            data = json.dumps(body).encode()
+            hdrs["Content-Type"] = "application/json"
+        if self.api_key:
+            hdrs.setdefault("Authorization", f"Bearer {self.api_key}")
+        elif self.csrf and method not in ("GET", "HEAD"):
+            hdrs.setdefault("X-CSRF-Token", self.csrf)
+        req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
 
         try:
             with self._opener.open(req, timeout=120) as response:
+                self.last_headers = response.headers
                 raw = response.read()
                 if not raw:
                     return response.status, None
                 try:
                     return response.status, json.loads(raw)
-                except json.JSONDecodeError:
-                    # /activate chuyển hướng về trang HTML — vẫn là 200 hợp lệ.
-                    return response.status, raw.decode("utf-8", "replace")
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return response.status, raw
         except urllib.error.HTTPError as exc:
+            self.last_headers = exc.headers
             raw = exc.read()
             try:
                 return exc.code, json.loads(raw) if raw else None
             except json.JSONDecodeError:
                 return exc.code, {"detail": raw.decode("utf-8", "replace")}
 
-    def get(self, path):
-        return self.request("GET", path)
+    def get(self, path, **kw):
+        return self.request("GET", path, **kw)
 
-    def post(self, path, body=None, upload=None):
-        return self.request("POST", path, body=body, upload=upload)
+    def post(self, path, body=None, **kw):
+        return self.request("POST", path, body=body, **kw)
 
     def put(self, path, body):
         return self.request("PUT", path, body=body)
 
+    def patch(self, path, body):
+        return self.request("PATCH", path, body=body)
+
+    def delete(self, path):
+        return self.request("DELETE", path)
+
     def download(self, path: str) -> bytes:
-        with self._opener.open(self.base + path, timeout=60) as response:
-            return response.read()
+        status, payload = self.get(path)
+        assert status == 200 and isinstance(payload, bytes), (status, payload)
+        return payload
+
+
+# --------------------------------------------------------------------------
+# Hộp thư SMTP và người nhận webhook chạy trong tiến trình test
+# --------------------------------------------------------------------------
+
+
+class _SmtpHandler(socketserver.StreamRequestHandler):
+    """SMTP tối giản, đủ cho smtplib: EHLO, MAIL, RCPT, DATA, QUIT."""
+
+    def handle(self) -> None:
+        sink: SmtpSink = self.server.sink  # type: ignore[attr-defined]
+        self.wfile.write(b"220 websigner-test ESMTP\r\n")
+        rcpt: list[str] = []
+        while line := self.rfile.readline():
+            command = line.decode(errors="replace").strip()
+            verb = command.split(" ", 1)[0].upper()
+            if verb in ("EHLO", "HELO"):
+                self.wfile.write(b"250 websigner-test\r\n")
+            elif verb == "MAIL":
+                rcpt = []
+                self.wfile.write(b"250 OK\r\n")
+            elif verb == "RCPT":
+                rcpt.append(command.split(":", 1)[1].strip().strip("<>"))
+                self.wfile.write(b"250 OK\r\n")
+            elif verb == "DATA":
+                self.wfile.write(b"354 End with .\r\n")
+                lines = []
+                while (chunk := self.rfile.readline()) not in (b".\r\n", b""):
+                    lines.append(chunk)
+                import email
+
+                message = email.message_from_bytes(b"".join(lines))
+                body = message.get_payload(decode=True).decode("utf-8", "replace")
+                subject = str(email.header.make_header(email.header.decode_header(message["Subject"])))
+                with sink.lock:
+                    sink.messages.extend({"to": r, "subject": subject, "body": body} for r in rcpt)
+                self.wfile.write(b"250 Queued\r\n")
+            elif verb == "QUIT":
+                self.wfile.write(b"221 Bye\r\n")
+                return
+            else:
+                self.wfile.write(b"250 OK\r\n")
+
+
+@dataclass
+class SmtpSink:
+    port: int = field(default_factory=free_port)
+    messages: list[dict] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def start(self) -> None:
+        self.server = socketserver.ThreadingTCPServer(("127.0.0.1", self.port), _SmtpHandler)
+        self.server.daemon_threads = True
+        self.server.sink = self  # type: ignore[attr-defined]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def to(self, address: str) -> list[dict]:
+        with self.lock:
+            return [m for m in self.messages if m["to"] == address]
+
+    def stop(self) -> None:
+        self.server.shutdown()
+
+
+class _HookHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        receiver: WebhookReceiver = self.server.receiver  # type: ignore[attr-defined]
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        with receiver.lock:
+            receiver.requests.append({"headers": dict(self.headers), "body": body})
+            status = receiver.fail_next.pop(0) if receiver.fail_next else 200
+        self.send_response(status)
+        self.end_headers()
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+@dataclass
+class WebhookReceiver:
+    port: int = field(default_factory=free_port)
+    requests: list[dict] = field(default_factory=list)
+    fail_next: list[int] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/hook"
+
+    def start(self) -> None:
+        self.server = ThreadingHTTPServer(("127.0.0.1", self.port), _HookHandler)
+        self.server.receiver = self  # type: ignore[attr-defined]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def events(self, document_id: str | None = None) -> list[dict]:
+        with self.lock:
+            events = [json.loads(r["body"]) for r in self.requests]
+        if document_id is None:
+            return events
+        return [e for e in events if e["data"].get("document", {}).get("id") == document_id]
+
+    def stop(self) -> None:
+        self.server.shutdown()
+
+
+def verify_webhook_signature(secret: str, headers: dict, body: bytes) -> bool:
+    """Đúng đoạn mã hệ thống tích hợp phải viết để kiểm chữ ký webhook."""
+    parts = dict(p.split("=", 1) for p in headers["WebSigner-Signature"].split(","))
+    expected = hmac.new(secret.encode(), parts["t"].encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, parts["v1"])
 
 
 # --------------------------------------------------------------------------
@@ -162,8 +321,8 @@ class Backend:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def client(self) -> Client:
-        return Client(self.url)
+    def client(self, **kwargs) -> Client:
+        return Client(self.url, **kwargs)
 
 
 class Lab:
@@ -176,12 +335,22 @@ class Lab:
         self.sample = workdir / "sample.pdf"
         self.main_port = free_port()
         self.tsa_port = free_port()
+        self.db_name = f"websigner_e2e_{secrets.token_hex(4)}"
+        self.db_url = ADMIN_DSN.rsplit("/", 1)[0] + "/" + self.db_name
+        self.smtp = SmtpSink()
+        self.hooks = WebhookReceiver()
         self._processes: list[Process] = []
 
     # ---- dựng ------------------------------------------------------------
 
     def setup(self) -> None:
+        import psycopg
+
         self.data.mkdir(parents=True, exist_ok=True)
+        with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+            conn.execute(f'CREATE DATABASE "{self.db_name}"')
+        self.smtp.start()
+        self.hooks.start()
         self._make_certs()
         self._make_sample()
         self.tsa = self._start_tsa()
@@ -208,13 +377,27 @@ class Lab:
             capture_output=True,
         )
 
+    def sql(self, query: str, params=()) -> list[tuple]:
+        """Đi thẳng vào cơ sở dữ liệu: chỉnh gói, giả lập hết hạn, thử phá nhật ký."""
+        import psycopg
+
+        with psycopg.connect(self.db_url, autocommit=True) as conn:
+            cur = conn.execute(query, params)
+            return cur.fetchall() if cur.description else []
+
     # ---- tiến trình ------------------------------------------------------
 
-    def _env(self, **extra: str) -> dict:
+    def env(self, **extra: str) -> dict:
         return {
             "WEBSIGNER_DATA": str(self.data),
             "WEBSIGNER_TRUST_DIR": str(self.trust),
             "WEBSIGNER_TSA_URL": f"http://127.0.0.1:{self.tsa_port}/tsa",
+            "WEBSIGNER_DATABASE_URL": self.db_url,
+            "WEBSIGNER_SECRET_KEY": "e2e-" + "k" * 40,
+            "WEBSIGNER_WEBHOOK_ALLOW_PRIVATE": "1",
+            "WEBSIGNER_SMTP_URL": f"smtp://127.0.0.1:{self.smtp.port}",
+            # Agent in "Đã kết nối" ra log — phải thấy ngay, không chờ đầy bộ đệm.
+            "PYTHONUNBUFFERED": "1",
             **extra,
         }
 
@@ -234,7 +417,7 @@ class Lab:
                     "--pfx",
                     str(self.certs / "tsa.pfx"),
                 ],
-                self._env(),
+                self.env(),
                 ROOT,
             )
         )
@@ -258,11 +441,15 @@ class Lab:
                     "--log-level",
                     "warning",
                 ],
-                self._env(**env),
+                self.env(**env),
                 ROOT / "backend",
             )
         )
-        wait_until(lambda: port_open(port), f"backend {name}:{port}")
+        wait_until(
+            lambda: port_open(port) or not process.alive(), f"backend {name}:{port}"
+        )
+        if not process.alive():
+            raise RuntimeError(f"backend {name} chết:\n{process.output()}")
         return Backend(process, port)
 
     def start_agent(
@@ -291,14 +478,12 @@ class Lab:
                     "--no-activate",
                     *args,
                 ],
-                self._env(**(env or {})),
+                self.env(**(env or {})),
                 ROOT,
             )
         )
-        probe = Client(target.url)
         wait_until(
-            lambda: probe.get(f"/api/agents/{code}/certificates")[0] == 200
-            or not process.alive(),
+            lambda: "Đã kết nối" in process.output() or not process.alive(),
             f"agent {code}",
         )
         if not process.alive():
@@ -318,6 +503,15 @@ class Lab:
     def teardown(self) -> None:
         for process in reversed(self._processes):
             process.stop()
+        self.smtp.stop()
+        self.hooks.stop()
+        try:
+            import psycopg
+
+            with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+                conn.execute(f'DROP DATABASE IF EXISTS "{self.db_name}" WITH (FORCE)')
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -327,11 +521,55 @@ class Lab:
 BOX_LEFT = [65, 383, 238, 484]
 BOX_RIGHT = [300, 383, 470, 484]
 
+SIGNER_A = {"name": "Nguyễn Văn A", "tax_code": "0101234567"}
+SIGNER_B = {"name": "Trần Thị Bích", "tax_code": "0107654321"}
 
-def upload(client: Client, pdf: bytes) -> str:
-    status, doc = client.post("/api/documents", upload=pdf)
+
+def register(backend: Backend, *, plan: str | None = "enterprise", lab: Lab | None = None) -> Client:
+    """Tổ chức mới + chủ tổ chức đã đăng nhập. Mặc định nâng lên gói không giới hạn
+    để test không vấp hạn mức — test hạn mức tự hạ gói."""
+    client = backend.client()
+    email = f"owner-{uuid.uuid4().hex[:10]}@e2e.vn"
+    status, me = client.post(
+        "/api/auth/register",
+        {"org_name": f"Công ty {email[:12]}", "name": "Chủ Tổ Chức", "email": email, "password": PASSWORD},
+    )
+    assert status == 201, me
+    client.csrf, client.me = me["csrf_token"], me
+    if plan and lab is not None:
+        lab.sql("UPDATE organizations SET plan = %s WHERE id = %s", (plan, me["org"]["id"]))
+    return client
+
+
+def api_client(session: Client) -> Client:
+    status, created = session.post("/api/org/api-keys", {"name": "ERP"})
+    assert status == 201, created
+    return Client(session.base, api_key=created["secret"])
+
+
+def create_document(
+    api: Client,
+    pdf: bytes,
+    recipients: list[dict],
+    *,
+    send: bool = True,
+    headers: dict | None = None,
+    **extra,
+) -> dict:
+    status, doc = api.post(
+        "/v1/documents",
+        upload=pdf,
+        form={"data": json.dumps({"recipients": recipients, "send": send, **extra})},
+        headers=headers,
+    )
     assert status == 201, doc
-    return doc["id"]
+    return doc
+
+
+def invite_path(doc: dict, index: int) -> str:
+    """Đường API của liên kết ký người nhận thứ ``index``."""
+    token = doc["recipients"][index]["signing_url"].rsplit("/s/", 1)[1]
+    return f"/api/sign/{token}"
 
 
 def first_cert(client: Client, code: str) -> str:
@@ -340,15 +578,16 @@ def first_cert(client: Client, code: str) -> str:
     return data["certificates"][0]["id"]
 
 
-def sign(client: Client, path: str, code: str, box=BOX_LEFT):
-    """Ký qua `path` (đường chủ sở hữu hoặc đường liên kết mời)."""
+def sign(client: Client, path: str, code: str, box=BOX_LEFT, page: int = 1, **options):
+    """Ký qua liên kết người nhận ``path`` (``/api/sign/<token>``)."""
     return client.post(
         f"{path}/sign",
         body={
             "agent_code": code,
             "cert_id": first_cert(client, code),
-            "page": 1,
+            "page": page,
             "box": box,
+            **options,
         },
     )
 

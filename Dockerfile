@@ -1,4 +1,6 @@
 # Chỉ đóng gói backend + giao diện. Agent chạy trên máy người ký, không ở đây.
+# Cần thêm PostgreSQL (WEBSIGNER_DATABASE_URL) và WEBSIGNER_SECRET_KEY — xem
+# compose.yaml để chạy cả hai cùng lúc.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -40,12 +42,13 @@ VOLUME ["/data"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD curl -fsS http://127.0.0.1:8000/api/session || exit 1
+  CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
 
 WORKDIR /app/backend
 # --proxy-headers: sau reverse proxy (Traefik/Cloudflare) thì không có nó
 # request.url.scheme luôn là http -> liên kết kích hoạt thiết bị sai scheme và
-# cookie ws_device không được gắn cờ Secure.
+# cookie không được gắn cờ Secure.
+# Đúng một tiến trình: relay agent và pha 1 của lượt ký nằm trong bộ nhớ.
 CMD ["python", "-m", "uvicorn", "app.main:app", \
      "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--forwarded-allow-ips", "*"]
