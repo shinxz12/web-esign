@@ -852,14 +852,14 @@ button.small,
 .recipient-row-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 .recipient-num-tag {
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 4px;
 }
 
@@ -868,6 +868,46 @@ button.small,
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  margin-right: auto;
+}
+
+/* Mọi ô nhập trong thẻ người nhận cùng nền, cùng chiều cao — kể cả ô
+   email/số/select vốn không nằm trong .form-group. */
+.recipient-edit-card input,
+.recipient-edit-card select {
+  height: 34px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px !important;
+  box-sizing: border-box;
+}
+
+.recipient-edit-card input:focus,
+.recipient-edit-card select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.recipient-edit-card .recipient-order-box input {
+  width: 56px !important;
+  height: 28px;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.recipient-edit-card .form-row-2 {
+  margin-top: 8px;
+  align-items: center;
+}
+
+.recipient-edit-card .form-group {
+  margin: 0 !important;
 }
 
 .btn-icon-del {
@@ -876,6 +916,7 @@ button.small,
   color: var(--muted);
   cursor: pointer;
   padding: 2px 4px;
+  font-size: 14px;
 }
 
 .btn-icon-del:hover {
@@ -885,16 +926,31 @@ button.small,
 .recipient-field-info {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recipient-field-info .badge {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.recipient-field-info .button {
+  height: 34px;
+  white-space: nowrap;
 }
 
 .btn-clear-field {
   background: transparent;
   border: none;
   color: var(--error);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   padding: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-clear-field:hover {

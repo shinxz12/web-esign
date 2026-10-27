@@ -403,7 +403,8 @@ export async function renderDraftEditor(container, docId) {
 
       const taxInput = el("input", {
         type: "text",
-        placeholder: "MST (khớp chứng thư)",
+        placeholder: "MST",
+        title: "Mã số thuế — phải khớp MST trên chứng thư số của người ký",
         value: rec.tax_code,
         style: { fontSize: "12px" },
         onInput: (e) => (rec.tax_code = e.target.value),
@@ -464,8 +465,8 @@ export async function renderDraftEditor(container, docId) {
           fieldInfoRow.append(
             el(
               "span",
-              { className: "badge", style: { background: color.bg, color: color.text, border: `1px solid ${color.border}` } },
-              `Trang ${rec.field.page + 1}: ${w}×${h}pt`
+              { className: "badge", title: `${w}×${h}pt`, style: { background: color.bg, color: color.text, border: `1px solid ${color.border}` } },
+              `Ô ký · trang ${rec.field.page + 1}`
             ),
             el(
               "button",
