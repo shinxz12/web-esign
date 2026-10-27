@@ -373,6 +373,101 @@ def test_ho_so_dat_san_khong_hop_le_bi_chan_khi_tao(api, pdf):
 # --------------------------------------------------------------------------
 
 
+def _signature_png(blank: bool = False) -> str:
+    import base64
+    import io as _io
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (400, 160), (255, 255, 255, 0))
+    if not blank:
+        ImageDraw.Draw(image).line([(20, 120), (90, 30), (160, 130), (380, 60)], fill=(10, 30, 120, 255), width=6)
+    buf = _io.BytesIO()
+    image.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_ky_tay_khong_can_token_va_chu_ky_so_truoc_van_hop_le(lab, api, pdf):
+    """Người ngoài không có token ký tay; chữ ký số đã có không bị phá."""
+    field = {"page": 1, "box": [300, 383, 465, 473]}
+    doc = create_document(
+        api, pdf, [SIGNER_A, {"name": "Khách Lẻ", "method": "handwritten", "order": 2, "field": field}]
+    )
+    assert doc["recipients"][1]["method"] == "handwritten"
+    hand = invite_path(doc, 1)
+    assert sign(lab.main.client(), invite_path(doc, 0), "111111", BOX_LEFT)[0] == 200
+
+    browser = lab.main.client()
+    status, body = sign(browser, hand, "111111")
+    assert status == 409 and body["code"] == "wrong_method"
+    status, body = browser.post(f"{hand}/handwrite", {"image": _signature_png(blank=True)})
+    assert status == 400 and body["code"] == "empty_signature"
+
+    image = _signature_png()
+    status, body = browser.post(f"{hand}/handwrite", {"image": image})
+    assert status == 200, body
+    assert body["document"]["status"] == "completed"
+    assert body["recipient"]["signature"]["profile"] == "handwritten"
+
+    _, reports = api.get(f"/v1/documents/{doc['id']}/verify")
+    [digital] = reports  # chữ ký tay không phải chữ ký số
+    assert digital["signer"] == "NGUYEN VAN A"
+    assert digital["intact"] and digital["trusted"] and digital["covers_whole_document"]
+    assert digital["problems"] == []
+
+    signed = api.download(f"/v1/documents/{doc['id']}/file")
+    hand_fields = [f for f in _reader(signed).root["/AcroForm"]["/Fields"] if f.get_object()["/T"].startswith("KyTay")]
+    [widget] = [f.get_object() for f in hand_fields]
+    assert [float(v) for v in widget["/Rect"]] == pytest.approx(field["box"])
+    assert "/AP" in widget, "ảnh chữ ký phải nằm trong hình hiển thị của ô"
+
+    import base64
+    import hashlib
+
+    _, trail = api.get(f"/v1/documents/{doc['id']}/audit")
+    hand_event = next(e for e in trail["events"] if e["type"] == "recipient.signed" and e["data"]["profile"] == "handwritten")
+    raw = base64.b64decode(image.split(",", 1)[1])
+    assert hand_event["data"]["image_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert trail["chain_valid"]
+
+
+def test_nhung_iframe_chi_cho_origin_da_khai_va_chan_csrf(lab, pdf):
+    org = register(lab.main, lab=lab)
+    org_api = api_client(org)
+    doc = create_document(org_api, pdf, [SIGNER_A])
+    token = doc["recipients"][0]["signing_url"].rsplit("/s/", 1)[1]
+    page = lab.main.client()
+
+    page.get(f"/s/{token}")
+    assert "frame-ancestors 'none'" in page.last_headers["Content-Security-Policy"]
+    assert page.last_headers["X-Frame-Options"] == "DENY"
+
+    for bad in ("https://*.doitac.vn", "https://erp.doitac.vn/ky", "javascript:alert(1)"):
+        status, body = org.patch("/api/org", {"embed_origins": [bad]})
+        assert status == 400 and body["code"] == "invalid_origin", bad
+    status, body = org.patch("/api/org", {"embed_origins": ["https://ERP.doitac.vn/"]})
+    assert status == 200 and body["embed_origins"] == ["https://erp.doitac.vn"]
+
+    page.get(f"/s/{token}")
+    assert page.last_headers["Content-Security-Policy"].endswith("frame-ancestors https://erp.doitac.vn")
+    assert page.last_headers.get("X-Frame-Options") is None
+    assert page.get(f"/api/sign/{token}")[1]["embed_origins"] == ["https://erp.doitac.vn"]
+
+    # Tổ chức khác không được hưởng cấu hình nhúng của tổ chức này.
+    other = create_document(api_client(register(lab.main, lab=lab)), pdf, [SIGNER_A])
+    page.get("/s/" + other["recipients"][0]["signing_url"].rsplit("/s/", 1)[1])
+    assert "frame-ancestors 'none'" in page.last_headers["Content-Security-Policy"]
+
+    # Trang của đối tác (hay bất kỳ trang nào khác) không tự gửi thao tác ký được.
+    status, body = page.post(
+        f"/api/sign/{token}/decline", {"reason": "gia mao"}, headers={"Origin": "https://erp.doitac.vn"}
+    )
+    assert status == 403 and body["code"] == "cross_origin"
+    assert _doc(org_api, doc)["status"] == "in_progress"
+    status, _ = page.post(f"/api/sign/{token}/decline", {"reason": "that"}, headers={"Origin": lab.main.url})
+    assert status == 200
+
+
 def test_khoa_api_va_phien_dang_nhap(lab, owner):
     anonymous = lab.main.client()
     status, body = anonymous.get("/v1/documents")

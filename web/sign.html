@@ -88,6 +88,9 @@
 
           <details id="manual-pair">
             <summary>Trình duyệt chưa kích hoạt? Dùng mã ghép cặp</summary>
+            <p id="iframe-pair-hint" class="hint" style="color: var(--accent); margin-bottom: 8px;" hidden>
+              Trang đang mở trong khung nhúng (iframe) — trình duyệt thường chặn cookie bên thứ ba, vui lòng nhập mã ghép cặp từ agent để ký.
+            </p>
             <p class="hint">
               Chạy <code>agent.py --activate-browser</code> trên máy cắm token
               để kích hoạt trình duyệt này, hoặc nhập mã 6 số agent in ra.
@@ -104,6 +107,22 @@
           </details>
         </section>
 
+        <section class="card step" id="step-handwrite" hidden>
+          <h3 id="step-handwrite-title"><span class="num">1</span> Vẽ chữ ký tay</h3>
+          <div class="sig-pad-wrapper">
+            <canvas id="sig-pad" class="sig-pad"></canvas>
+            <div id="sig-pad-placeholder" class="sig-pad-placeholder">Ký tên vào đây bằng chuột, bút hoặc ngón tay</div>
+          </div>
+          <div class="sig-pad-actions">
+            <button type="button" id="btn-pad-clear" class="button">Xoá</button>
+            <label class="button sig-upload-btn">
+              <input type="file" id="sig-upload-input" accept="image/png, image/jpeg" hidden />
+              Tải ảnh chữ ký
+            </label>
+          </div>
+          <div id="pad-status" class="status muted"></div>
+        </section>
+
         <section class="card step" id="step-cert" hidden>
           <h3><span class="num">2</span> Chọn chứng thư</h3>
           <div id="cert-list" class="cert-list">
@@ -112,7 +131,7 @@
         </section>
 
         <section class="card step" id="step-place" hidden>
-          <h3><span class="num">3</span> Vị trí &amp; hình chữ ký</h3>
+          <h3 id="step-place-title"><span class="num" id="step-place-num">3</span> <span id="step-place-text">Vị trí &amp; hình chữ ký</span></h3>
 
           <div id="field-fixed-notice" class="hint" hidden>
             Vị trí ô ký đã được chỉ định sẵn trên tài liệu.
@@ -128,41 +147,44 @@
             </select>
           </div>
 
-          <label for="sign-color">Màu chữ</label>
-          <div class="row">
-            <select id="sign-color">
-              <option value="xanh-duong">Xanh dương</option>
-              <option value="xanh-la">Xanh lá</option>
-              <option value="do">Đỏ</option>
-              <option value="den">Đen</option>
-            </select>
-            <label class="checkbox" title="Vẽ viền quanh ô ký">
-              <input type="checkbox" id="sign-border" />
-              Viền
-            </label>
-          </div>
+          <div id="digital-stamp-options">
+            <label for="sign-color">Màu chữ</label>
+            <div class="row">
+              <select id="sign-color">
+                <option value="xanh-duong">Xanh dương</option>
+                <option value="xanh-la">Xanh lá</option>
+                <option value="do">Đỏ</option>
+                <option value="den">Đen</option>
+              </select>
+              <label class="checkbox" title="Vẽ viền quanh ô ký">
+                <input type="checkbox" id="sign-border" />
+                Viền
+              </label>
+            </div>
 
-          <label class="checkbox">
-            <input type="checkbox" id="sign-check" checked />
-            Dấu tích chìm
-          </label>
-
-          <label>Logo / con dấu</label>
-          <div class="row">
-            <label class="button logo-pick">
-              <input type="file" id="logo-input" accept="image/*" hidden />
-              Chọn ảnh
+            <label class="checkbox">
+              <input type="checkbox" id="sign-check" checked />
+              Dấu tích chìm
             </label>
-            <button id="btn-logo-clear">Bỏ logo</button>
+
+            <label>Logo / con dấu</label>
+            <div class="row">
+              <label class="button logo-pick">
+                <input type="file" id="logo-input" accept="image/*" hidden />
+                Chọn ảnh
+              </label>
+              <button id="btn-logo-clear">Bỏ logo</button>
+            </div>
+            <div id="logo-status" class="status muted"></div>
+            <label>Xem trước hình chữ ký</label>
+            <div class="preview-stage" id="preview-stage"></div>
           </div>
-          <div id="logo-status" class="status muted"></div>
-          <label>Xem trước hình chữ ký</label>
-          <div class="preview-stage" id="preview-stage"></div>
           <div id="box-info" class="status muted"></div>
         </section>
 
         <section class="card sticky-sign" id="signer-action-card" hidden>
           <button id="btn-sign" class="primary wide" disabled>Ký số</button>
+          <button id="btn-handwrite" class="primary wide" hidden disabled>Ký tay</button>
           <button id="btn-decline-signer" class="danger wide" style="margin-top: 6px;">✕ Từ chối ký</button>
           <div id="sign-status" class="status"></div>
           <div id="profile-hint" class="status muted"></div>

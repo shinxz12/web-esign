@@ -8,16 +8,28 @@ from __future__ import annotations
 
 import io
 
-from fastapi import APIRouter, Body, File, Request, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from . import devices, documents, signflow, signing
 from .auth import client_ip, user_agent
 from .errors import ApiError
 from .relay import AgentUnavailable, hub
-from .web import base_url, pdf_response
+from .web import base_url, check_same_origin, pdf_response
 
-router = APIRouter(prefix="/api/sign", tags=["Người nhận (liên kết ký)"])
+
+def _same_origin_for_writes(request: Request) -> None:
+    # Trang ký có thể nằm trong iframe của đối tác, nhưng mọi thao tác ghi vẫn
+    # phải do chính trang ký gửi lên (Origin = Web Signer), không phải trang khác.
+    if request.method not in ("GET", "HEAD"):
+        check_same_origin(request)
+
+
+router = APIRouter(
+    prefix="/api/sign",
+    tags=["Người nhận (liên kết ký)"],
+    dependencies=[Depends(_same_origin_for_writes)],
+)
 
 DEVICE_COOKIE = "ws_device"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
@@ -33,6 +45,8 @@ def _payload(doc: dict, recipient: dict, recipients: list[dict]) -> dict:
         "recipient": documents.recipient_view(recipient, doc, org_view=False, base_url=None),
         "turn": documents.turn(doc, recipient, recipients),
         "profile": signing.default_profile().value,
+        # Trang ký báo kết quả (postMessage) cho đúng các origin này khi bị nhúng.
+        "embed_origins": list(doc["org_embed_origins"] or []),
     }
 
 
@@ -82,6 +96,16 @@ async def recipient_sign(request: Request, token: str, body: signflow.SignReques
         base_url=base_url(request),
         ip=client_ip(request),
         user_agent=user_agent(request),
+    )
+    return _payload(*await documents.by_token(token))
+
+
+@router.post("/{token}/handwrite", summary="Ký tay: đóng ảnh chữ ký vào tài liệu (không cần token)")
+async def recipient_handwrite(
+    request: Request, token: str, body: signflow.HandwriteRequest = Body(...)
+) -> dict:
+    await signflow.handwrite(
+        token, body, base_url=base_url(request), ip=client_ip(request), user_agent=user_agent(request)
     )
     return _payload(*await documents.by_token(token))
 

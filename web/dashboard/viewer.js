@@ -244,15 +244,15 @@ export async function renderSentDoc(container, docId) {
     (doc.recipients || []).forEach((rec, idx) => {
       const color = RECIPIENT_COLORS[idx % RECIPIENT_COLORS.length];
       const roleText = ROLE_LABELS[rec.role] || rec.role;
+      const isHandwritten = rec.signature?.profile === "handwritten" || rec.method === "handwritten";
       const statusText =
         rec.status === "signed"
-          ? "Đã ký số"
+          ? (isHandwritten ? "Đã ký tay" : "Đã ký số")
           : rec.status === "approved"
           ? "Đã duyệt"
           : rec.status === "declined"
           ? "Đã từ chối"
           : "Chờ xử lý";
-
       const statusBadge = el(
         "span",
         { className: `badge badge-${rec.status}` },
@@ -269,10 +269,15 @@ export async function renderSentDoc(container, docId) {
         statusBadge
       );
 
+      const methodText = rec.role === "signer"
+        ? (rec.method === "handwritten" ? "Ký tay" : "Ký số")
+        : null;
+
       const subInfo = el(
         "div",
         { className: "timeline-item-meta muted" },
-        el("span", {}, `${roleText}`),
+        el("span", {}, roleText),
+        methodText ? el("span", {}, ` · ${methodText}`) : null,
         rec.email ? el("span", {}, ` · ${rec.email}`) : null,
         rec.tax_code ? el("span", {}, ` · MST: ${rec.tax_code}`) : null
       );
@@ -285,20 +290,30 @@ export async function renderSentDoc(container, docId) {
         rec.decline_reason ? el("div", { className: "status-err" }, `Lý do từ chối: ${rec.decline_reason}`) : null
       );
 
-      // Chi tiết chữ ký số (nếu đã ký)
+      // Chi tiết chữ ký (nếu đã ký)
       let signatureBox = null;
       if (rec.signature) {
         const sig = rec.signature;
-        signatureBox = el(
-          "div",
-          { className: "sig-details-box" },
-          el("div", { className: "sig-details-title" }, "✓ Thông tin chứng thư số:"),
-          el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Người ký:"), el("strong", {}, sig.signer)),
-          sig.tax_code ? el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "MST:"), el("span", {}, sig.tax_code)) : null,
-          el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Nhà cấp (CA):"), el("span", {}, sig.cert_issuer)),
-          el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Serial chứng thư:"), el("code", {}, sig.cert_serial)),
-          el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Chuẩn ký:"), el("span", {}, sig.profile || "PAdES"))
-        );
+        if (sig.profile === "handwritten") {
+          signatureBox = el(
+            "div",
+            { className: "sig-details-box" },
+            el("div", { className: "sig-details-title" }, "✓ Chữ ký tay"),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Người ký:"), el("strong", {}, sig.signer || rec.name)),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Hình thức:"), el("span", {}, "Ký tay"))
+          );
+        } else {
+          signatureBox = el(
+            "div",
+            { className: "sig-details-box" },
+            el("div", { className: "sig-details-title" }, "✓ Thông tin chứng thư số:"),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Người ký:"), el("strong", {}, sig.signer)),
+            sig.tax_code ? el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "MST:"), el("span", {}, sig.tax_code)) : null,
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Nhà cấp (CA):"), el("span", {}, sig.cert_issuer)),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Serial chứng thư:"), el("code", {}, sig.cert_serial)),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Chuẩn ký:"), el("span", {}, sig.profile || "PAdES"))
+          );
+        }
       }
 
       // Thao tác cho người nhận đang chờ (chưa xong)

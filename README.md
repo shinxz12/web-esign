@@ -171,6 +171,36 @@ dưới-trái, `page` đếm từ 0.
 `Idempotency-Key` (24 giờ): gọi lại cùng khoá trả đúng tài liệu cũ kèm
 `Idempotent-Replayed: true`; cùng khoá khác nội dung là 422.
 
+### Ký tay (không cần token)
+
+Khai người nhận `"method": "handwritten"`: họ vẽ hoặc tải ảnh chữ ký trên
+trang ký, server đóng ảnh vào ô ký (`POST /api/sign/{token}/handwrite`). Đây
+là chữ ký điện tử đơn giản — không có chữ ký số của người đó; bằng chứng là
+nhật ký kiểm toán (IP, thời điểm, SHA-256 của ảnh và của PDF). Ảnh nằm trong
+một **trường chữ ký trống, chỉ đọc**, không sửa nội dung trang, nên chữ ký số
+đã có trước đó vẫn hợp lệ (đã kiểm bằng pyHanko; chú thích kiểu Stamp thì
+bị coi là sửa đổi trái phép).
+
+### Nhúng trang ký vào hệ thống đối tác (iframe)
+
+1. Quản trị viên khai origin của đối tác ở **Nhà phát triển → Nhúng trang ký**
+   (hoặc `PATCH /api/org {"embed_origins": ["https://erp.doitac.vn"]}`). Chỉ
+   nhận đúng origin `https://host[:port]`, không ký tự đại diện, tối đa 10.
+2. Backend của đối tác lấy `signing_url` qua API rồi đặt vào
+   `<iframe src="…">`. Không bao giờ dựng liên kết ở trình duyệt.
+3. Trang ký báo kết quả cho trang cha bằng `postMessage`
+   (`{source:"websigner", type:"websigner.signed"|"approved"|"declined"|"loaded", document_id, recipient_id, document_status}`),
+   chỉ gửi tới các origin đã khai. Trang cha phải kiểm `event.origin`, và
+   coi tin nhắn là gợi ý cập nhật giao diện — trạng thái thật lấy từ webhook/API.
+
+Bảo mật: `/s/<token>` trả CSP `frame-ancestors` = đúng các origin của tổ chức
+gửi tài liệu (tổ chức khác vẫn `'none'`); mọi thao tác ghi trên `/api/sign/*`
+bị từ chối nếu header `Origin` không phải Web Signer — trang đối tác không tự
+bấm ký/từ chối thay người dùng được. Cookie thiết bị giữ `SameSite=Lax`, nên
+trong iframe trình duyệt không gửi nó: ký bằng token trong iframe dùng mã ghép
+cặp. Đây là cố ý — nới thành `SameSite=None` thì bất kỳ trang nào cũng nhờ
+agent của người dùng ký hộ được. Ký tay chạy trọn trong iframe.
+
 ### Webhook
 
 Sự kiện: `document.sent|completed|declined|voided|expired`,
@@ -229,7 +259,8 @@ liên kết mời cũ hết hiệu lực, lấy liên kết mới từ API.
 | Dò mật khẩu / mã ghép cặp | Giới hạn tần suất theo IP + email; băm giả khi email không tồn tại để thời gian phản hồi như nhau |
 | SSRF qua webhook | Chỉ HTTPS công cộng, resolver chặn IP nội bộ lúc kết nối, không theo redirect |
 | Sửa lịch sử | Nhật ký chuỗi băm; hệ thống tích hợp giữ `head` để phát hiện cả việc viết lại toàn bộ |
-| Script bên thứ ba | pdf.js đóng gói tại `web/vendor`, CSP `script-src 'self'`, `frame-ancestors 'none'` |
+| Script bên thứ ba | pdf.js đóng gói tại `web/vendor`, CSP `script-src 'self'`, `frame-ancestors 'none'` (trang ký: chỉ origin đối tác đã khai) |
+| Trang khác giả thao tác ký | `/api/sign/*` ghi chỉ nhận `Origin` của chính Web Signer |
 | Token trong URL | `Referrer-Policy: no-referrer`; access log che `/s/…`, `/api/sign/…`, `?t=…` |
 | Request khổng lồ | Chặn theo `Content-Length` trước khi multipart ghi ra đĩa; trần theo gói |
 
@@ -491,7 +522,6 @@ Hai điểm dễ sai, đã xử lý:
 | `WEBSIGNER_MAIL_FROM` | `Web Signer <no-reply@localhost>` | người gửi email |
 | `WEBSIGNER_ALLOW_SIGNUP` | bật | tắt thì chỉ tạo tổ chức bằng CLI |
 | `WEBSIGNER_WEBHOOK_ALLOW_PRIVATE` | tắt | cho webhook gọi http/IP nội bộ — **chỉ dùng khi phát triển** |
-| `WEBSIGNER_FRAME_ANCESTORS` | — | origin được nhúng trang ký `/s/…` vào iframe |
 | `WEBSIGNER_DB_POOL_SIZE` | 10 | số kết nối tối đa tới PostgreSQL |
 | `CLOUDFLARE_R2_BUCKET` | — | đặt thì PDF lưu trên R2 thay vì `<data>/documents` |
 | `CLOUDFLARE_R2_ACCOUNT_ID` · `…_ACCESS_KEY_ID` · `…_SECRET_ACCESS_KEY` | — | thông tin truy cập R2 |

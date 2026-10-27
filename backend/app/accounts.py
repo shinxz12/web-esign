@@ -51,6 +51,7 @@ def org_view(row: dict) -> dict:
         "id": row["id"],
         "name": row["name"],
         "plan": plan.to_dict(),
+        "embed_origins": list(row.get("embed_origins") or []),
         "created_at": row["created_at"].isoformat(),
     }
 
@@ -115,7 +116,8 @@ async def session_context(token: str) -> dict | None:
     """Phiên còn hạn -> người dùng + tổ chức + csrf trong một truy vấn."""
     row = await db.fetchone(
         "SELECT s.csrf_token, s.expires_at, u.*, "
-        "       o.name AS org_name, o.plan AS org_plan, o.created_at AS org_created_at "
+        "       o.name AS org_name, o.plan AS org_plan, o.created_at AS org_created_at, "
+        "       o.embed_origins AS org_embed_origins "
         "FROM sessions s JOIN users u ON u.id = s.user_id "
         "JOIN organizations o ON o.id = u.org_id "
         "WHERE s.token_hash = %s AND s.expires_at > now()",
@@ -250,9 +252,42 @@ async def get_org(org_id: str) -> dict:
     return row
 
 
-async def rename_org(org_id: str, name: str) -> dict:
+def normalize_embed_origin(value: str) -> str:
+    """``https://erp.doitac.vn[:port]`` — đúng một origin, không đường dẫn, không ký tự đại diện."""
+    from urllib.parse import urlsplit
+
+    from .config import WEBHOOK_ALLOW_PRIVATE
+
+    origin = value.strip().rstrip("/")
+    parts = urlsplit(origin)
+    allowed = ("https", "http") if WEBHOOK_ALLOW_PRIVATE else ("https",)
+    if (
+        parts.scheme not in allowed
+        or not parts.hostname
+        or parts.path
+        or parts.query
+        or parts.fragment
+        or parts.username
+        or "*" in origin
+        or " " in origin
+    ):
+        raise ApiError(400, "invalid_origin", f"Origin không hợp lệ: {value!r} — dạng https://ten-mien.vn")
+    return f"{parts.scheme}://{parts.netloc.lower()}"
+
+
+async def update_org(org_id: str, name: str | None, embed_origins: list[str] | None) -> dict:
+    changes: dict = {}
+    if name is not None:
+        changes["name"] = name.strip()
+    if embed_origins is not None:
+        if len(embed_origins) > 10:
+            raise ApiError(400, "invalid_origin", "Tối đa 10 origin được nhúng")
+        changes["embed_origins"] = sorted({normalize_embed_origin(o) for o in embed_origins})
+    if not changes:
+        return await get_org(org_id)
+    assignments = ", ".join(f"{column} = %s" for column in changes)
     row = await db.fetchone(
-        "UPDATE organizations SET name = %s WHERE id = %s RETURNING *", (name.strip(), org_id)
+        f"UPDATE organizations SET {assignments} WHERE id = %s RETURNING *", (*changes.values(), org_id)
     )
     if row is None:
         raise not_found("Không tìm thấy tổ chức")
@@ -398,7 +433,8 @@ async def api_key_context(secret: str) -> dict | None:
         return None
     row = await db.fetchone(
         "SELECT k.id AS key_id, k.last_used_at, o.id AS org_id, o.name AS org_name, "
-        "       o.plan AS org_plan, o.created_at AS org_created_at "
+        "       o.plan AS org_plan, o.created_at AS org_created_at, "
+        "       o.embed_origins AS org_embed_origins "
         "FROM api_keys k JOIN organizations o ON o.id = k.org_id "
         "WHERE k.key_hash = %s AND k.revoked_at IS NULL",
         (security.token_hash(secret),),

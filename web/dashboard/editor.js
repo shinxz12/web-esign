@@ -47,6 +47,7 @@ export async function renderDraftEditor(container, docId) {
     email: r.email || "",
     tax_code: r.tax_code || "",
     role: r.role || "signer",
+    method: r.method || "digital",
     order: r.order || i + 1,
     field: r.field || null, // { page: 0, box: [x1, y1, x2, y2] }
   }));
@@ -230,6 +231,7 @@ export async function renderDraftEditor(container, docId) {
           email: "",
           tax_code: "",
           role: "signer",
+          method: "digital",
           order: nextOrder,
           field: null,
         });
@@ -293,6 +295,7 @@ export async function renderDraftEditor(container, docId) {
         email: r.email.trim() || null,
         tax_code: r.tax_code.trim() || null,
         role: r.role,
+        method: r.role === "signer" ? (r.method || "digital") : "digital",
         order: Number(r.order) || 1,
         field: r.role === "signer" && r.field ? r.field : null,
       }));
@@ -308,6 +311,7 @@ export async function renderDraftEditor(container, docId) {
         email: r.email || "",
         tax_code: r.tax_code || "",
         role: r.role || "signer",
+        method: r.method || "digital",
         order: r.order || i + 1,
         field: r.field || null,
       }));
@@ -418,6 +422,7 @@ export async function renderDraftEditor(container, docId) {
             rec.role = e.target.value;
             if (rec.role === "approver") {
               rec.field = null;
+              rec.method = "digital";
             }
             renderRecipientsList();
             drawAllBoxes();
@@ -427,6 +432,18 @@ export async function renderDraftEditor(container, docId) {
         el("option", { value: "approver", selected: rec.role === "approver" }, "Người duyệt")
       );
 
+      const methodSelect = el(
+        "select",
+        {
+          style: { fontSize: "12px" },
+          title: "Cách ký",
+          onChange: (e) => {
+            rec.method = e.target.value;
+          },
+        },
+        el("option", { value: "digital", selected: (rec.method || "digital") === "digital" }, "Ký số (USB token)"),
+        el("option", { value: "handwritten", selected: rec.method === "handwritten" }, "Ký tay")
+      );
       const orderInput = el("input", {
         type: "number",
         min: "1",
@@ -528,7 +545,13 @@ export async function renderDraftEditor(container, docId) {
         ),
         el("div", { className: "form-group", style: { margin: "4px 0" } }, nameInput),
         el("div", { className: "form-row-2" }, emailInput, taxInput),
-        el("div", { className: "form-row-2", style: { marginTop: "6px" } }, roleSelect, fieldInfoRow)
+        el(
+          "div",
+          { className: "form-row-2", style: { marginTop: "6px" } },
+          roleSelect,
+          rec.role === "signer" ? methodSelect : el("div")
+        ),
+        el("div", { style: { marginTop: "6px" } }, fieldInfoRow)
       );
 
       recipientsListContainer.appendChild(card);

@@ -1,6 +1,8 @@
-"""Một lượt ký số của người nhận: pha 1 trên server, token ký qua agent, pha 2.
+"""Một lượt ký của người nhận.
 
-Tài liệu không rời server: agent chỉ nhận vài trăm byte signed attributes.
+Ký số: pha 1 trên server, token ký qua agent, pha 2. Tài liệu không rời
+server: agent chỉ nhận vài trăm byte signed attributes.
+Ký tay: đóng ảnh chữ ký vào một trường chỉ đọc (``handwriting``).
 
 Hai người cùng nhóm ký song song không được ký đè lên nhau: mỗi tài liệu có
 một khoá trong tiến trình giữ suốt prepare → token → finalize → ghi. Người
@@ -12,11 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import weakref
 
 from pydantic import BaseModel, Field
 
-from . import documents, signing, storage
+from . import documents, handwriting, signing, storage
 from .errors import ApiError, bad_request, conflict
 from .relay import AgentError, AgentSession
 
@@ -46,16 +49,88 @@ def _lock(doc_id: str) -> asyncio.Lock:
     return lock
 
 
-def _placement(doc: dict, recipient: dict, request: SignRequest) -> tuple[int, tuple[float, float, float, float]]:
+def _placement(
+    doc: dict, recipient: dict, page: int | None, box: tuple[float, float, float, float] | None
+) -> tuple[int, tuple[float, float, float, float]]:
     """Ô ký người gửi đặt sẵn thắng mọi thứ trình duyệt gửi lên."""
     if recipient["field_page"] is not None:
         return recipient["field_page"], tuple(recipient["field_box"])  # type: ignore[return-value]
-    if request.page is None or request.box is None:
+    if page is None or box is None:
         raise bad_request("missing_placement", "Chưa chọn vị trí ô ký")
-    if request.page >= doc["page_count"]:
+    if page >= doc["page_count"]:
         raise bad_request("invalid_field", "Trang đặt ô ký không tồn tại")
-    documents.FieldSpec(page=request.page, box=request.box)  # cùng luật kích thước
-    return request.page, request.box
+    documents.FieldSpec(page=page, box=box)  # cùng luật kích thước
+    return page, box
+
+
+def _require_method(recipient: dict, method: str) -> None:
+    if recipient["method"] != method:
+        raise conflict(
+            "wrong_method",
+            "Người nhận này ký bằng USB token" if recipient["method"] == "digital" else "Người nhận này ký tay",
+        )
+
+
+def _acquire(doc_id: str) -> asyncio.Lock:
+    lock = _lock(doc_id)
+    if lock.locked():
+        raise conflict("signing_in_progress", "Một người khác đang ký tài liệu này, thử lại sau ít phút")
+    return lock
+
+
+class HandwriteRequest(BaseModel):
+    # data:image/png;base64,… từ canvas, hoặc base64 thuần của PNG/JPEG/WEBP.
+    image: str = Field(min_length=20, max_length=1_500_000)
+    page: int | None = Field(default=None, ge=0)
+    box: tuple[float, float, float, float] | None = None
+
+
+async def handwrite(
+    token: str,
+    request: HandwriteRequest,
+    *,
+    base_url: str,
+    ip: str | None,
+    user_agent: str | None,
+) -> None:
+    """Đóng ảnh chữ ký tay vào PDF. Không token, không chữ ký số của người này."""
+    doc, recipient, recipients = await documents.by_token(token)
+    documents.require_turn(doc, recipient, recipients, "signer")
+    _require_method(recipient, "handwritten")
+    raw = request.image.split(",", 1)[1] if request.image.startswith("data:") else request.image
+    try:
+        image_bytes = base64.b64decode(raw, validate=True)
+    except ValueError:
+        raise bad_request("invalid_image", "Ảnh chữ ký không phải base64 hợp lệ") from None
+    image = await asyncio.to_thread(handwriting.load_signature_image, image_bytes)
+    page, box = _placement(doc, recipient, request.page, request.box)
+
+    async with _acquire(doc["id"]):
+        doc, recipient, recipients = await documents.by_token(token)
+        documents.require_turn(doc, recipient, recipients, "signer")
+        revision = doc["revision"]
+        pdf = await asyncio.to_thread(storage.read_revision, doc["id"], revision)
+        signed_pdf, field_name = await asyncio.to_thread(
+            handwriting.stamp, pdf, page, box, image, recipient["name"]
+        )
+        await documents.commit_signature(
+            recipient["id"],
+            revision,
+            signed_pdf,
+            {
+                "signer": recipient["name"],
+                "tax_code": None,
+                "cert_serial": None,
+                "cert_issuer": None,
+                "field_name": field_name,
+                "page": page,
+                "profile": "handwritten",
+                "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+            },
+            base_url=base_url,
+            ip=ip,
+            user_agent=user_agent,
+        )
 
 
 async def sign(
@@ -69,6 +144,7 @@ async def sign(
 ) -> None:
     doc, recipient, recipients = await documents.by_token(token)
     documents.require_turn(doc, recipient, recipients, "signer")
+    _require_method(recipient, "digital")
 
     cert_entry = session.certificates.get(request.cert_id)
     if cert_entry is None:
@@ -88,12 +164,8 @@ async def sign(
             f"Chứng thư của «{cert_cn}» không khớp người được mời ký ({expected})",
         )
 
-    page, box = _placement(doc, recipient, request)
-    lock = _lock(doc["id"])
-    if lock.locked():
-        raise conflict("signing_in_progress", "Một người khác đang ký tài liệu này, thử lại sau ít phút")
-
-    async with lock:
+    page, box = _placement(doc, recipient, request.page, request.box)
+    async with _acquire(doc["id"]):
         # Đọc lại sau khi giữ khoá: có thể ai đó vừa ký xong.
         doc, recipient, recipients = await documents.by_token(token)
         documents.require_turn(doc, recipient, recipients, "signer")

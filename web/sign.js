@@ -12,6 +12,10 @@ const TOKEN = location.pathname.startsWith("/s/")
   ? decodeURIComponent(location.pathname.slice(3))
   : null;
 
+if (window.self !== window.top) {
+  document.body.classList.add("embedded");
+}
+
 const $ = (id) => document.getElementById(id);
 const ui = {
   // Topbar
@@ -61,16 +65,27 @@ const ui = {
   manualPair: $("manual-pair"),
   agentCode: $("agent-code"),
   btnConnect: $("btn-connect"),
+  // Signer: Step Handwrite
+  stepHandwrite: $("step-handwrite"),
+  stepHandwriteTitle: $("step-handwrite-title"),
+  sigPad: $("sig-pad"),
+  sigPadPlaceholder: $("sig-pad-placeholder"),
+  btnPadClear: $("btn-pad-clear"),
+  sigUploadInput: $("sig-upload-input"),
+  padStatus: $("pad-status"),
 
   // Signer: Step 2 Cert
   stepCert: $("step-cert"),
   certList: $("cert-list"),
 
-  // Signer: Step 3 Place & Style
+  // Signer: Step Place & Style
   stepPlace: $("step-place"),
+  stepPlaceNum: $("step-place-num"),
+  stepPlaceText: $("step-place-text"),
   fieldFixedNotice: $("field-fixed-notice"),
   sizeControlGroup: $("size-control-group"),
   size: $("sign-size"),
+  digitalStampOptions: $("digital-stamp-options"),
   color: $("sign-color"),
   border: $("sign-border"),
   check: $("sign-check"),
@@ -79,10 +94,12 @@ const ui = {
   logoStatus: $("logo-status"),
   previewStage: $("preview-stage"),
   boxInfo: $("box-info"),
+  iframePairHint: $("iframe-pair-hint"),
 
   // Signer: Action
   signerActionCard: $("signer-action-card"),
   btnSign: $("btn-sign"),
+  btnHandwrite: $("btn-handwrite"),
   btnDeclineSigner: $("btn-decline-signer"),
   signStatus: $("sign-status"),
   profileHint: $("profile-hint"),
@@ -148,6 +165,8 @@ const state = {
   logoVersion: 0,
   pairingCode: null,
   certSignature: null,
+  handwriteImage: null,
+  embedOrigins: [],
 };
 
 let ghost = null;
@@ -169,6 +188,24 @@ function toast(text, kind = "ok") {
   ui.toasts.appendChild(el);
   setTimeout(() => el.classList.add("out"), 3200);
   setTimeout(() => el.remove(), 3600);
+}
+
+function postToParent(type) {
+  if (window.self === window.top) return;
+  const origins = state.embedOrigins || [];
+  if (!origins.length) return;
+  const msg = {
+    source: "websigner",
+    type,
+    document_id: state.doc?.id,
+    recipient_id: state.recipient?.id,
+    document_status: state.doc?.status,
+  };
+  for (const origin of origins) {
+    try {
+      window.parent.postMessage(msg, origin);
+    } catch {}
+  }
 }
 
 async function api(path, options = {}) {
@@ -327,7 +364,8 @@ function renderRecipientsList() {
       let statusText = "";
       let statusTone = "muted";
       if (r.status === "signed") {
-        statusText = `✓ Đã ký${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
+        const isHandwritten = r.signature?.profile === "handwritten" || r.method === "handwritten";
+        statusText = `✓ Đã ${isHandwritten ? "ký tay" : "ký"}${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
         statusTone = "ok";
       } else if (r.status === "approved") {
         statusText = `✓ Đã duyệt${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
@@ -374,25 +412,48 @@ function applyTurn() {
       ui.btnApprove.disabled = false;
       ui.btnDeclineApprover.disabled = false;
 
-      // Ẩn toàn bộ UI ký số
+      // Ẩn toàn bộ UI ký
       ui.stepAgent.hidden = true;
       ui.stepCert.hidden = true;
+      ui.stepHandwrite.hidden = true;
       ui.stepPlace.hidden = true;
       ui.signerActionCard.hidden = true;
       ui.btnPlace.hidden = true;
       ui.btnClearBox.hidden = true;
+      ui.btnSign.hidden = true;
+      ui.btnHandwrite.hidden = true;
     } else {
       // Role signer
       setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu.", "ok");
       ui.approverCard.hidden = true;
-
-      // Hiện UI ký số
-      ui.stepAgent.hidden = false;
-      ui.stepCert.hidden = false;
-      ui.stepPlace.hidden = false;
       ui.signerActionCard.hidden = false;
       ui.btnDeclineSigner.disabled = false;
 
+      const isHandwritten = r.method === "handwritten";
+      if (isHandwritten) {
+        ui.stepAgent.hidden = true;
+        ui.stepCert.hidden = true;
+        ui.digitalStampOptions.hidden = true;
+        ui.stepHandwrite.hidden = false;
+        ui.btnSign.hidden = true;
+        ui.btnHandwrite.hidden = false;
+        ui.profileHint.hidden = true;
+        ui.stepPlace.hidden = false;
+        if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "2";
+        if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí ô ký";
+        requestAnimationFrame(() => resizePadCanvas());
+      } else {
+        ui.stepAgent.hidden = false;
+        ui.stepCert.hidden = false;
+        ui.digitalStampOptions.hidden = false;
+        ui.stepHandwrite.hidden = true;
+        ui.btnSign.hidden = false;
+        ui.btnHandwrite.hidden = true;
+        ui.profileHint.hidden = false;
+        ui.stepPlace.hidden = false;
+        if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "3";
+        if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí & hình chữ ký";
+      }
       if (r.field) {
         state.fixedField = true;
         state.box = { page: r.field.page, rect: r.field.box };
@@ -407,17 +468,20 @@ function applyTurn() {
         ui.btnPlace.hidden = false;
         ui.btnPlace.disabled = false;
       }
+      updateCanSign();
     }
   } else {
     // Không thể thao tác
     ui.approverCard.hidden = true;
     ui.stepAgent.hidden = true;
     ui.stepCert.hidden = true;
+    ui.stepHandwrite.hidden = true;
     ui.stepPlace.hidden = true;
     ui.signerActionCard.hidden = true;
     ui.btnPlace.hidden = true;
     ui.btnClearBox.hidden = true;
-
+    ui.btnSign.hidden = true;
+    ui.btnHandwrite.hidden = true;
     if (r.role === "signer" && r.field && r.status === "pending") {
       // Nếu là người ký có ô ký đặt sẵn nhưng chưa đến lượt, vẫn giữ toạ độ để hiển thị vị trí
       state.fixedField = true;
@@ -434,7 +498,9 @@ function applyTurn() {
         r.status === "approved"
           ? "Bạn đã duyệt tài liệu này."
           : r.status === "signed"
-            ? "Bạn đã ký tài liệu này."
+            ? ((r.signature?.profile === "handwritten" || r.method === "handwritten")
+                ? "Bạn đã ký tay tài liệu này."
+                : "Bạn đã ký tài liệu này.")
             : r.status === "declined"
               ? "Bạn đã từ chối tài liệu này."
               : "Bạn đã xử lý tài liệu này rồi.",
@@ -476,12 +542,13 @@ async function openDocument() {
     state.recipient = data.recipient;
     state.turn = data.turn;
     state.profile = data.profile;
+    state.embedOrigins = data.embed_origins || [];
 
     renderDocumentInfo();
     applyTurn();
+    postToParent("websigner.loaded");
     ui.btnVerify.disabled = false;
     ui.emptyState.hidden = true;
-
     await loadPdf();
     await refreshLogo();
   } catch (error) {
@@ -513,10 +580,10 @@ async function handleActionResult(payload) {
   state.recipient = payload.recipient;
   state.turn = payload.turn;
   if (payload.profile) state.profile = payload.profile;
+  if (payload.embed_origins) state.embedOrigins = payload.embed_origins;
 
   renderDocumentInfo();
   applyTurn();
-
   if (payload.document.revision !== oldRevision) {
     await loadPdf();
   } else {
@@ -701,9 +768,9 @@ function moveGhost(item, clientX, clientY) {
   if (!ghost) {
     ghost = document.createElement("div");
     ghost.className = "sig-box ghost";
-    ghost.appendChild(previewNode());
+    const isHandwritten = state.recipient?.method === "handwritten";
+    ghost.appendChild(isHandwritten ? previewHandwriteNode() : previewNode());
   }
-  if (ghost.parentElement !== item.overlay) item.overlay.appendChild(ghost);
   const rect = item.overlay.getBoundingClientRect();
   const [w, h] = boxSize();
   const pw = w * state.scale;
@@ -766,7 +833,8 @@ function drawBox() {
   div.style.top = `${Math.min(sy1, sy2)}px`;
   div.style.width = `${width}px`;
   div.style.height = `${height}px`;
-  div.appendChild(previewNode());
+  const isHandwritten = state.recipient?.method === "handwritten";
+  div.appendChild(isHandwritten ? previewHandwriteNode() : previewNode());
 
   if (!state.fixedField) {
     div.appendChild(handleNode());
@@ -911,7 +979,8 @@ function refreshPreview() {
   renderPreviewStage();
   drawBox();
   if (ghost) {
-    ghost.replaceChildren(previewNode());
+    const isHandwritten = state.recipient?.method === "handwritten";
+    ghost.replaceChildren(isHandwritten ? previewHandwriteNode() : previewNode());
     applyPreviewScale(ghost, state.scale);
   }
 }
@@ -937,14 +1006,226 @@ function updateBoxInfo() {
     );
   }
 
-  const canSign = Boolean(
-    state.box &&
-      state.certId &&
-      state.doc &&
-      state.turn?.can_act &&
-      state.recipient?.role === "signer",
-  );
-  ui.btnSign.disabled = !canSign;
+  updateCanSign();
+}
+
+function updateCanSign() {
+  if (state.recipient?.role !== "signer" || !state.turn?.can_act) {
+    ui.btnSign.disabled = true;
+    ui.btnHandwrite.disabled = true;
+    return;
+  }
+  if (state.recipient?.method === "handwritten") {
+    const hasImage = !isPadEmpty();
+    const hasPlacement = state.fixedField || Boolean(state.box);
+    ui.btnHandwrite.disabled = !(hasImage && hasPlacement);
+  } else {
+    const canSign = Boolean(
+      state.box &&
+        state.certId &&
+        state.doc &&
+        state.doc.status === "in_progress",
+    );
+    ui.btnSign.disabled = !canSign;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Chữ ký tay (Handwritten signature pad)
+// --------------------------------------------------------------------------
+
+let padCanvas = null;
+let padCtx = null;
+let isDrawing = false;
+let strokes = [];
+let currentStroke = null;
+let uploadedImage = null;
+let uploadedImgObj = null;
+
+function resizePadCanvas() {
+  if (!padCanvas) return;
+  const rect = padCanvas.getBoundingClientRect();
+  const w = rect.width || 300;
+  const h = rect.height || 160;
+  const dpr = window.devicePixelRatio || 1;
+  padCanvas.width = Math.round(w * dpr);
+  padCanvas.height = Math.round(h * dpr);
+  redrawPad();
+}
+
+function redrawPad() {
+  if (!padCanvas || !padCtx) return;
+  const dpr = window.devicePixelRatio || 1;
+  padCtx.save();
+  padCtx.setTransform(1, 0, 0, 1, 0, 0);
+  padCtx.clearRect(0, 0, padCanvas.width, padCanvas.height);
+  padCtx.scale(dpr, dpr);
+
+  if (uploadedImage) {
+    if (!uploadedImgObj || uploadedImgObj.src !== uploadedImage) {
+      uploadedImgObj = new Image();
+      uploadedImgObj.onload = () => redrawPad();
+      uploadedImgObj.src = uploadedImage;
+      padCtx.restore();
+      return;
+    }
+    const rect = padCanvas.getBoundingClientRect();
+    const padW = rect.width || 300;
+    const padH = rect.height || 160;
+    const imgW = uploadedImgObj.naturalWidth || uploadedImgObj.width;
+    const imgH = uploadedImgObj.naturalHeight || uploadedImgObj.height;
+    const imgRatio = imgW / imgH;
+    const padRatio = padW / padH;
+    let dw, dh;
+    if (imgRatio > padRatio) {
+      dw = padW * 0.9;
+      dh = dw / imgRatio;
+    } else {
+      dh = padH * 0.9;
+      dw = dh * imgRatio;
+    }
+    const dx = (padW - dw) / 2;
+    const dy = (padH - dh) / 2;
+    padCtx.drawImage(uploadedImgObj, dx, dy, dw, dh);
+  } else {
+    for (const stroke of strokes) {
+      drawStroke(padCtx, stroke);
+    }
+  }
+  padCtx.restore();
+}
+
+function drawStroke(ctx, points) {
+  if (!points || points.length === 0) return;
+  ctx.beginPath();
+  ctx.strokeStyle = "#143a7a"; // mực xanh đậm
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  if (points.length === 1) {
+    ctx.arc(points[0].x, points[0].y, 1.25, 0, Math.PI * 2);
+    ctx.fillStyle = "#143a7a";
+    ctx.fill();
+    return;
+  }
+
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length - 1; i++) {
+    const midX = (points[i].x + points[i + 1].x) / 2;
+    const midY = (points[i].y + points[i + 1].y) / 2;
+    ctx.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+  }
+  ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+  ctx.stroke();
+}
+
+function isPadEmpty() {
+  return !uploadedImage && strokes.length === 0;
+}
+
+function updateHandwriteState() {
+  const empty = isPadEmpty();
+  if (ui.sigPadPlaceholder) {
+    ui.sigPadPlaceholder.hidden = !empty;
+  }
+  if (!empty) {
+    state.handwriteImage = uploadedImage || padCanvas.toDataURL("image/png");
+  } else {
+    state.handwriteImage = null;
+  }
+  updateCanSign();
+  drawBox();
+}
+
+function onPadPointerDown(e) {
+  e.preventDefault();
+  try {
+    padCanvas.setPointerCapture(e.pointerId);
+  } catch {}
+  isDrawing = true;
+  uploadedImage = null;
+  uploadedImgObj = null;
+  if (ui.sigUploadInput) ui.sigUploadInput.value = "";
+  setStatus(ui.padStatus, "", "muted");
+
+  const rect = padCanvas.getBoundingClientRect();
+  const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  currentStroke = [pt];
+  strokes.push(currentStroke);
+  redrawPad();
+}
+
+function onPadPointerMove(e) {
+  if (!isDrawing || !currentStroke) return;
+  e.preventDefault();
+  const rect = padCanvas.getBoundingClientRect();
+  const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  currentStroke.push(pt);
+  redrawPad();
+}
+
+function onPadPointerUp(e) {
+  if (!isDrawing) return;
+  isDrawing = false;
+  currentStroke = null;
+  try {
+    padCanvas.releasePointerCapture(e.pointerId);
+  } catch {}
+  updateHandwriteState();
+}
+
+function clearPad() {
+  strokes = [];
+  currentStroke = null;
+  uploadedImage = null;
+  uploadedImgObj = null;
+  if (ui.sigUploadInput) ui.sigUploadInput.value = "";
+  redrawPad();
+  updateHandwriteState();
+  setStatus(ui.padStatus, "", "muted");
+}
+
+function handleUploadSignature(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (!["image/png", "image/jpeg"].includes(file.type)) {
+    toast("Chỉ chấp nhận ảnh PNG hoặc JPEG.", "err");
+    return;
+  }
+  if (file.size > 1024 * 1024) {
+    toast("Ảnh chữ ký không được vượt quá 1MB.", "err");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    uploadedImage = reader.result;
+    uploadedImgObj = null;
+    strokes = [];
+    currentStroke = null;
+    redrawPad();
+    updateHandwriteState();
+    setStatus(ui.padStatus, `Đã tải: ${file.name}`, "ok");
+  };
+  reader.readAsDataURL(file);
+}
+
+function previewHandwriteNode() {
+  const wrap = document.createElement("div");
+  wrap.className = "sig-preview sig-preview-handwrite";
+  if (state.handwriteImage) {
+    const img = document.createElement("img");
+    img.src = state.handwriteImage;
+    img.className = "sig-handwrite-img";
+    img.alt = "Chữ ký tay";
+    wrap.appendChild(img);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "sig-handwrite-placeholder";
+    placeholder.textContent = "Chữ ký tay";
+    wrap.appendChild(placeholder);
+  }
+  return wrap;
 }
 
 // --------------------------------------------------------------------------
@@ -972,10 +1253,15 @@ async function connectAgent() {
 
 async function detectDevice() {
   if (state.pairingCode) return;
+  if (state.recipient?.role === "signer" && state.recipient?.method === "handwritten") return;
   let info;
   try {
     info = await api("/api/agents");
   } catch {
+    if (window.self !== window.top && ui.iframePairHint) {
+      ui.manualPair.open = true;
+      ui.iframePairHint.hidden = false;
+    }
     return;
   }
 
@@ -990,9 +1276,14 @@ async function detectDevice() {
       "muted",
     );
     ui.manualPair.open = true;
+    if (window.self !== window.top && ui.iframePairHint) {
+      ui.iframePairHint.hidden = false;
+    }
     ui.stepAgent.classList.remove("done");
     return;
   }
+
+  if (ui.iframePairHint) ui.iframePairHint.hidden = true;
 
   if (!info.online) {
     setStatus(ui.agentStatus, "Agent chưa chạy trên máy này.", "busy");
@@ -1104,12 +1395,53 @@ async function sign() {
     toast("Ký số thành công.");
     state.box = null;
     await handleActionResult(result);
+    postToParent("websigner.signed");
     await runVerify();
   } catch (error) {
     handleError(error, ui.signStatus);
   } finally {
     ui.btnSign.classList.remove("busy");
     updateBoxInfo();
+  }
+}
+
+async function handwrite() {
+  if (isPadEmpty()) {
+    return setStatus(ui.signStatus, "Vui lòng vẽ hoặc tải ảnh chữ ký trước khi ký.", "err");
+  }
+  if (!state.fixedField && !state.box) {
+    return setStatus(ui.signStatus, "Vui lòng chọn vị trí ô ký trên tài liệu.", "err");
+  }
+
+  ui.btnHandwrite.disabled = true;
+  ui.btnHandwrite.classList.add("busy");
+  setStatus(ui.signStatus, "Đang xử lý chữ ký tay…", "busy");
+
+  try {
+    const image = uploadedImage || padCanvas.toDataURL("image/png");
+    const payload = { image };
+    if (!state.fixedField && state.box) {
+      payload.page = state.box.page;
+      payload.box = state.box.rect;
+    }
+
+    const result = await api(`/api/sign/${state.token}/handwrite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    setStatus(ui.signStatus, "Ký tay thành công!", "ok");
+    toast("Đã ký tay tài liệu thành công.");
+    state.box = null;
+    await handleActionResult(result);
+    postToParent("websigner.signed");
+    await runVerify();
+  } catch (error) {
+    handleError(error, ui.signStatus);
+  } finally {
+    ui.btnHandwrite.classList.remove("busy");
+    updateCanSign();
   }
 }
 
@@ -1125,6 +1457,7 @@ async function approve() {
     setStatus(ui.approverStatus, "Đã duyệt thành công.", "ok");
     toast("Đã duyệt tài liệu.");
     await handleActionResult(result);
+    postToParent("websigner.approved");
   } catch (error) {
     handleError(error, ui.approverStatus);
   } finally {
@@ -1165,6 +1498,7 @@ async function handleDeclineSubmit(e) {
     closeDeclineDialog();
     toast("Đã từ chối tài liệu.");
     await handleActionResult(result);
+    postToParent("websigner.declined");
   } catch (error) {
     ui.declineError.hidden = false;
     ui.declineError.textContent = error.message;
@@ -1314,6 +1648,18 @@ ui.forgetDevice.onclick = async () => {
 };
 
 ui.btnSign.onclick = sign;
+ui.btnHandwrite.onclick = handwrite;
+ui.btnPadClear.onclick = clearPad;
+ui.sigUploadInput.onchange = handleUploadSignature;
+
+padCanvas = ui.sigPad;
+if (padCanvas) {
+  padCtx = padCanvas.getContext("2d");
+  padCanvas.addEventListener("pointerdown", onPadPointerDown);
+  padCanvas.addEventListener("pointermove", onPadPointerMove);
+  padCanvas.addEventListener("pointerup", onPadPointerUp);
+  padCanvas.addEventListener("pointercancel", onPadPointerUp);
+}
 ui.btnApprove.onclick = approve;
 ui.btnDeclineApprover.onclick = openDeclineDialog;
 ui.btnDeclineSigner.onclick = openDeclineDialog;
@@ -1372,6 +1718,7 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", () => {
   renderPreviewStage();
+  resizePadCanvas();
   drawBox();
 });
 

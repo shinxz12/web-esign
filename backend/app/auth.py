@@ -58,6 +58,7 @@ def _org(ctx: dict) -> dict:
         "name": ctx["org_name"],
         "plan": ctx["org_plan"],
         "created_at": ctx["org_created_at"],
+        "embed_origins": ctx["org_embed_origins"],
     }
 
 

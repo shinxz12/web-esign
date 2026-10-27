@@ -45,6 +45,7 @@ export async function renderDevelopers(container) {
   // Render các phần
   await renderApiKeysSection(sectionsWrapper);
   await renderWebhooksSection(sectionsWrapper);
+  await renderEmbedOriginsSection(sectionsWrapper);
   renderQuickstartSection(sectionsWrapper);
 }
 
@@ -711,6 +712,296 @@ async function renderWebhooksSection(wrapper) {
   }
 
   await loadWebhooks();
+}
+
+/**
+ * 3. Nhúng trang ký (iframe)
+ */
+async function renderEmbedOriginsSection(wrapper) {
+  const sectionCard = el("div", {
+    className: "card dev-section-card",
+    style: { marginTop: "24px" },
+  });
+  wrapper.appendChild(sectionCard);
+
+  const header = el(
+    "div",
+    { className: "section-header" },
+    el(
+      "div",
+      {},
+      el("h3", { style: { margin: 0 } }, "Nhúng trang ký (iframe)"),
+      el(
+        "p",
+        { className: "muted", style: { margin: "4px 0 0" } },
+        "Cấu hình các Origin (giao thức + tên miền) được phép nhúng liên kết ký /s/<token> vào thẻ <iframe> trên hệ thống của bạn."
+      )
+    )
+  );
+
+  const errorBox = el("div", {
+    className: "status err",
+    style: { marginTop: "12px", display: "none" },
+  });
+
+  function showError(msg) {
+    if (msg) {
+      errorBox.textContent = msg;
+      errorBox.style.display = "block";
+    } else {
+      errorBox.textContent = "";
+      errorBox.style.display = "none";
+    }
+  }
+
+  let origins = [...(state.me?.org?.embed_origins || [])];
+
+  const originsContainer = el("div", { style: { marginTop: "16px" } });
+
+  const inputNewOrigin = el("input", {
+    type: "text",
+    placeholder: "https://erp.partner.vn (chỉ gồm giao thức + tên miền, tối đa 10 origin)",
+    style: { flex: "1", fontSize: "13px" },
+    onKeyDown: (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        btnAddOrigin.click();
+      }
+    },
+  });
+
+  const btnAddOrigin = el(
+    "button",
+    {
+      type: "button",
+      className: "button",
+      onClick: () => {
+        showError("");
+        const val = inputNewOrigin.value.trim().replace(/\/+$/, "");
+        if (!val) {
+          showError("Vui lòng nhập origin (dạng https://ten-mien.vn)");
+          return;
+        }
+        if (origins.includes(val)) {
+          showError(`Origin ${val} đã tồn tại trong danh sách`);
+          return;
+        }
+        if (origins.length >= 10) {
+          showError("Tối đa 10 origin được nhúng");
+          return;
+        }
+        origins.push(val);
+        inputNewOrigin.value = "";
+        renderOriginsList();
+      },
+    },
+    "+ Thêm origin"
+  );
+
+  const addRow = el(
+    "div",
+    { style: { display: "flex", gap: "8px", marginTop: "12px", alignItems: "center" } },
+    inputNewOrigin,
+    btnAddOrigin
+  );
+
+  const btnSaveOrigins = el(
+    "button",
+    {
+      type: "button",
+      className: "button primary",
+      style: { marginTop: "16px" },
+      onClick: async () => {
+        showError("");
+        btnSaveOrigins.disabled = true;
+        btnSaveOrigins.textContent = "Đang lưu…";
+        try {
+          const res = await api("/api/org", {
+            method: "PATCH",
+            body: { embed_origins: origins },
+          });
+          origins = [...(res.embed_origins || [])];
+          if (state.me?.org) {
+            state.me.org.embed_origins = origins;
+          }
+          renderOriginsList();
+          toast("Đã lưu danh sách origin nhúng iframe thành công!", "ok");
+        } catch (err) {
+          showError(err.message || "Lỗi khi lưu danh sách origin");
+        } finally {
+          btnSaveOrigins.disabled = false;
+          btnSaveOrigins.textContent = "Lưu thay đổi";
+        }
+      },
+    },
+    "Lưu thay đổi"
+  );
+
+  function renderOriginsList() {
+    originsContainer.replaceChildren();
+    if (origins.length === 0) {
+      originsContainer.appendChild(
+        el(
+          "p",
+          { className: "muted", style: { fontStyle: "italic", margin: "8px 0" } },
+          "Chưa cấu hình origin nào. Mặc định trang ký từ chối mọi yêu cầu nhúng (frame-ancestors 'none')."
+        )
+      );
+      return;
+    }
+
+    const list = el("div", {
+      style: { display: "flex", flexDirection: "column", gap: "6px" },
+    });
+
+    origins.forEach((orig, idx) => {
+      const row = el(
+        "div",
+        {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "8px 12px",
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+          },
+        },
+        el("code", { style: { color: "var(--fg)", fontSize: "13px" } }, orig),
+        el(
+          "button",
+          {
+            type: "button",
+            className: "btn-icon-del",
+            title: "Xoá origin",
+            onClick: () => {
+              showError("");
+              origins.splice(idx, 1);
+              renderOriginsList();
+            },
+          },
+          "✕"
+        )
+      );
+      list.appendChild(row);
+    });
+
+    originsContainer.appendChild(list);
+  }
+
+  renderOriginsList();
+
+  const explanation = el(
+    "div",
+    { style: { marginTop: "20px", fontSize: "13px", lineHeight: "1.6" } },
+    el("h4", { style: { margin: "0 0 8px 0" } }, "Hướng dẫn & Lưu ý bảo mật:"),
+    el(
+      "ul",
+      { style: { paddingLeft: "20px", margin: 0 }, className: "muted" },
+      el(
+        "li",
+        {},
+        el("strong", { style: { color: "var(--fg)" } }, "Chính sách CSP: "),
+        "Web Signer bảo vệ trang ký bằng Content-Security-Policy: frame-ancestors. Chỉ các origin khai báo ở trên mới có thể nhúng liên kết ký /s/<token>."
+      ),
+      el(
+        "li",
+        { style: { marginTop: "4px" } },
+        el("strong", { style: { color: "var(--fg)" } }, "Liên kết ký (signing_url): "),
+        "Đường dẫn ký được sinh từ API phía máy chủ (server-side) khi tạo tài liệu hoặc lấy thông tin người nhận — ",
+        el("em", { style: { color: "var(--fg)" } }, "tuyệt đối không tự ghép đường dẫn ở phía client"),
+        "."
+      ),
+      el(
+        "li",
+        { style: { marginTop: "4px" } },
+        el("strong", { style: { color: "var(--fg)" } }, "Phương thức ký trong iframe: "),
+        "Ký số bằng USB token trong iframe thường yêu cầu người dùng nhập mã ghép cặp (pairing code) do các trình duyệt hiện đại chặn cookie bên thứ ba trong iframe; trong khi ",
+        el("strong", { style: { color: "var(--fg)" } }, "Ký tay hoạt động hoàn chỉnh trực tiếp"),
+        "."
+      ),
+      el(
+        "li",
+        { style: { marginTop: "4px" } },
+        el("strong", { style: { color: "var(--fg)" } }, "Sự kiện postMessage: "),
+        "Trang ký tự động gửi sự kiện (websigner.loaded, websigner.signed, websigner.approved, websigner.declined) tới đúng các origin được cấp phép."
+      )
+    )
+  );
+
+  const iframeSnippet = `<iframe src="{signing_url}" allow="clipboard-write" style="width:100%;height:900px;border:0"></iframe>`;
+
+  const originOfSigner = window.location.origin;
+  const listenerSnippet = `// Lắng nghe sự kiện từ Web Signer trong trang cha
+window.addEventListener("message", (event) => {
+  // 1. Kiểm tra nguồn gửi đúng từ Web Signer
+  if (event.origin !== "${originOfSigner}") return;
+
+  // 2. Kiểm tra định dạng dữ liệu
+  if (event.data?.source !== "websigner") return;
+
+  const { type, document_id, recipient_id, document_status } = event.data;
+  console.log("Web Signer event:", type, { document_id, recipient_id, document_status });
+
+  switch (type) {
+    case "websigner.loaded":
+      console.log("Trang ký đã nạp xong:", document_id);
+      break;
+    case "websigner.signed":
+      console.log("Người nhận đã ký thành công:", recipient_id);
+      break;
+    case "websigner.approved":
+      console.log("Người nhận đã duyệt tài liệu:", recipient_id);
+      break;
+    case "websigner.declined":
+      console.log("Người nhận đã từ chối tài liệu:", recipient_id);
+      break;
+  }
+});`;
+
+  function createSnippetBox(title, codeText) {
+    const box = el("div", { style: { marginTop: "16px" } });
+    const top = el(
+      "div",
+      { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
+      el("strong", { style: { fontSize: "13px" } }, title),
+      el(
+        "button",
+        {
+          type: "button",
+          className: "button small",
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(codeText);
+              toast("Đã sao chép đoạn mã!", "ok");
+            } catch {
+              promptModal({
+                title: "Sao chép đoạn mã",
+                message: "Sao chép mã dưới đây:",
+                defaultValue: codeText,
+              });
+            }
+          },
+        },
+        "📋 Sao chép"
+      )
+    );
+    const pre = el("pre", { className: "code-block" }, codeText);
+    box.append(top, pre);
+    return box;
+  }
+
+  sectionCard.append(
+    header,
+    errorBox,
+    originsContainer,
+    addRow,
+    btnSaveOrigins,
+    explanation,
+    createSnippetBox("Mã HTML nhúng iframe:", iframeSnippet),
+    createSnippetBox("Mã JavaScript lắng nghe sự kiện (Parent Listener):", listenerSnippet)
+  );
 }
 
 /**

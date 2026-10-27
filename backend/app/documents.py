@@ -96,6 +96,8 @@ class RecipientSpec(BaseModel):
     email: str | None = Field(default=None, max_length=254)
     tax_code: str | None = Field(default=None, max_length=20, pattern=r"^[0-9A-Za-z-]*$")
     role: Literal["signer", "approver"] = "signer"
+    # digital: ký số bằng USB token. handwritten: vẽ/tải ảnh chữ ký, không cần token.
+    method: Literal["digital", "handwritten"] = "digital"
     order: int | None = Field(default=None, ge=1, le=100)
     field: FieldSpec | None = None
 
@@ -115,6 +117,8 @@ class RecipientSpec(BaseModel):
     def _role_field(self) -> "RecipientSpec":
         if self.role == "approver" and self.field is not None:
             raise ValueError("người duyệt không có ô ký")
+        if self.role == "approver" and self.method != "digital":
+            raise ValueError("người duyệt không ký, không chọn được cách ký")
         self.name = self.name.strip()
         self.tax_code = (self.tax_code or "").strip() or None
         return self
@@ -176,6 +180,7 @@ def recipient_view(row: dict, doc: dict, *, org_view: bool, base_url: str | None
     view: dict[str, Any] = {
         "id": row["id"],
         "role": row["role"],
+        "method": row["method"],
         "order": row["routing_order"],
         "name": row["name"],
         "tax_code": row["tax_code"],
@@ -249,7 +254,8 @@ def signing_url(base_url: str, recipient: dict) -> str:
 # --------------------------------------------------------------------------
 
 _DOC_SELECT = (
-    "SELECT d.*, o.name AS org_name, u.email AS creator_email, u.name AS creator_name "
+    "SELECT d.*, o.name AS org_name, o.embed_origins AS org_embed_origins, "
+    "       u.email AS creator_email, u.name AS creator_name "
     "FROM documents d JOIN organizations o ON o.id = d.org_id "
     "LEFT JOIN users u ON u.id = d.created_by_user "
 )
@@ -384,15 +390,16 @@ async def _insert_recipients(conn: db.Conn, doc_id: str, specs: list[RecipientSp
     for position, spec in enumerate(specs):
         recipient_id = security.new_id("rcp")
         await conn.execute(
-            "INSERT INTO recipients (id, document_id, position, routing_order, role, name, email, "
-            "tax_code, field_page, field_box, token_hash) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO recipients (id, document_id, position, routing_order, role, method, name, "
+            "email, tax_code, field_page, field_box, token_hash) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 recipient_id,
                 doc_id,
                 position,
                 spec.order if spec.order is not None else position + 1,
                 spec.role,
+                spec.method,
                 spec.name,
                 spec.email,
                 spec.tax_code,
@@ -705,6 +712,18 @@ async def rotate_link(principal: Principal, doc_id: str, recipient_id: str, *, b
 # --------------------------------------------------------------------------
 # Phía người nhận (liên kết /s/<token>)
 # --------------------------------------------------------------------------
+
+
+async def embed_origins_for_token(token: str) -> list[str]:
+    """Origin được nhúng trang ký của liên kết này; [] nếu liên kết sai."""
+    if not 20 <= len(token) <= 100:
+        return []
+    row = await db.fetchone(
+        "SELECT o.embed_origins FROM recipients r JOIN documents d ON d.id = r.document_id "
+        "JOIN organizations o ON o.id = d.org_id WHERE r.token_hash = %s",
+        (security.token_hash(token),),
+    )
+    return list(row["embed_origins"]) if row else []
 
 
 async def by_token(token: str) -> tuple[dict, dict, list[dict]]:

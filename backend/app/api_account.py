@@ -53,7 +53,9 @@ class AcceptInvite(BaseModel):
 
 
 class OrgUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    # Origin của hệ thống đối tác được nhúng trang ký /s/<token> vào iframe.
+    embed_origins: list[str] | None = None
 
 
 class MemberInvite(BaseModel):
@@ -204,9 +206,9 @@ async def accept_invite(request: Request, response: Response, body: AcceptInvite
 # --------------------------------------------------------------------------
 
 
-@router.patch("/org", summary="Đổi tên tổ chức")
+@router.patch("/org", summary="Sửa tổ chức: tên, origin được nhúng trang ký")
 async def update_org(body: OrgUpdate, who: Principal = Depends(org_admin)) -> dict:
-    return accounts.org_view(await accounts.rename_org(who.org_id, body.name))
+    return accounts.org_view(await accounts.update_org(who.org_id, body.name, body.embed_origins))
 
 
 @router.get("/org/members", summary="Thành viên tổ chức")

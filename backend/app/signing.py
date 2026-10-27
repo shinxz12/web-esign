@@ -538,8 +538,8 @@ def incremental_writer(pdf_bytes: bytes) -> IncrementalPdfFileWriter:
     return IncrementalPdfFileWriter(io.BytesIO(pdf_bytes), strict=not hybrid)
 
 
-def free_field_name(pdf_bytes: bytes) -> str:
-    """``SigN`` đầu tiên chưa có trong tệp.
+def free_field_name(pdf_bytes: bytes, prefix: str = "Sig") -> str:
+    """``<prefix>N`` đầu tiên chưa có trong tệp.
 
     Tệp khách mang tới có thể đã được ký ở Adobe hay phần mềm của CA với ô
     ``Sig1``; đặt trùng tên thì pyHanko từ chối vì ô đó đã có chữ ký.
@@ -547,9 +547,9 @@ def free_field_name(pdf_bytes: bytes) -> str:
     reader = PdfFileReader(io.BytesIO(pdf_bytes), strict=not has_hybrid_xrefs(pdf_bytes))
     taken = {name for name, _, _ in fields.enumerate_sig_fields(reader)}
     n = 1
-    while f"Sig{n}" in taken:
+    while f"{prefix}{n}" in taken:
         n += 1
-    return f"Sig{n}"
+    return f"{prefix}{n}"
 
 
 async def prepare(

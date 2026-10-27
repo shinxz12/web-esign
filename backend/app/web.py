@@ -67,6 +67,24 @@ async def read_upload(file: UploadFile, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def csp(frame_ancestors: tuple[str, ...] | list[str]) -> str:
+    ancestors = " ".join(frame_ancestors) if frame_ancestors else "'none'"
+    return f"{CONTENT_SECURITY_POLICY}; frame-ancestors {ancestors}"
+
+
+def check_same_origin(request: Request) -> None:
+    """Chống CSRF cho các thao tác ký: request từ trình duyệt phải đến từ chính
+    trang của mình (kể cả khi trang đó nằm trong iframe của đối tác). Client
+    máy (không gửi Origin) không bị ảnh hưởng."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+    expected = base_url(request)
+    expected_origin = "/".join(expected.split("/")[:3])
+    if origin.rstrip("/") != expected_origin:
+        raise ApiError(403, "cross_origin", "Yêu cầu không đến từ trang ký của Web Signer")
+
+
 class SecurityHeaders:
     """ASGI thuần: thêm header vào mọi phản hồi HTTP mà không bọc lại body."""
 
@@ -81,25 +99,23 @@ class SecurityHeaders:
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
                 extra = {
                     b"x-content-type-options": b"nosniff",
                     b"referrer-policy": b"no-referrer",
                     b"permissions-policy": b"camera=(), microphone=(), geolocation=()",
-                    b"cross-origin-opener-policy": b"same-origin",
                 }
-                embeddable = path.startswith("/s/") and config.FRAME_ANCESTORS
-                if not path.startswith(_CSP_EXEMPT):
-                    ancestors = config.FRAME_ANCESTORS if embeddable else "'none'"
-                    extra[b"content-security-policy"] = (
-                        f"{CONTENT_SECURITY_POLICY}; frame-ancestors {ancestors}".encode()
-                    )
-                if not embeddable:
+                # Trang ký /s/<token> tự đặt CSP theo danh sách origin được nhúng
+                # của tổ chức — đã có CSP thì không ghi đè, không thêm X-Frame-Options.
+                if b"content-security-policy" not in present and not path.startswith(_CSP_EXEMPT):
+                    extra[b"content-security-policy"] = csp(()).encode()
                     extra[b"x-frame-options"] = b"DENY"
+                    extra[b"cross-origin-opener-policy"] = b"same-origin"
                 if path.startswith(("/api/", "/v1/")):
                     extra[b"cache-control"] = b"no-store"
                 if scope.get("scheme") == "https":
                     extra[b"strict-transport-security"] = b"max-age=31536000"
-                present = {name.lower() for name, _ in headers}
+
                 headers += [(k, v) for k, v in extra.items() if k not in present]
                 message["headers"] = headers
             await send(message)

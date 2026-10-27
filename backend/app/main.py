@@ -34,13 +34,14 @@ from . import (
     config,
     db,
     devices,
+    documents,
     signing,
     storage,
     trust,
     worker,
 )
 from .errors import ApiError
-from .web import BodyLimit, RedactSecrets, SecurityHeaders
+from .web import BodyLimit, RedactSecrets, SecurityHeaders, csp
 
 # uvicorn chỉ cấu hình logger của nó; root logger không có handler nên log của
 # ứng dụng sẽ rơi vào hư vô nếu không tự gắn.
@@ -133,9 +134,17 @@ async def healthz() -> dict:
 
 
 @app.get("/s/{token}", include_in_schema=False)
-def signer_page(token: str) -> FileResponse:
-    """Trang ký dành cho người nhận — token đọc từ đường dẫn ở phía trình duyệt."""
-    return FileResponse(WEB_DIR / "sign.html", headers={"Cache-Control": "no-store"})
+async def signer_page(token: str) -> FileResponse:
+    """Trang ký dành cho người nhận — token đọc từ đường dẫn ở phía trình duyệt.
+
+    Chỉ origin mà tổ chức gửi tài liệu đã khai mới nhúng được trang này vào
+    iframe (CSP ``frame-ancestors``); còn lại bị chặn như mọi trang khác.
+    """
+    origins = await documents.embed_origins_for_token(token)
+    headers = {"Cache-Control": "no-store", "Content-Security-Policy": csp(origins)}
+    if not origins:
+        headers["X-Frame-Options"] = "DENY"
+    return FileResponse(WEB_DIR / "sign.html", headers=headers)
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

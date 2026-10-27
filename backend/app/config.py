@@ -36,10 +36,6 @@ WEBHOOK_ALLOW_PRIVATE = os.environ.get("WEBSIGNER_WEBHOOK_ALLOW_PRIVATE", "").lo
     "yes",
 )
 
-# Cho phép nhúng trang ký /s/<token> vào iframe của hệ thống tích hợp.
-# Danh sách origin cách nhau bởi dấu cách, ví dụ "https://erp.example.vn".
-FRAME_ANCESTORS = os.environ.get("WEBSIGNER_FRAME_ANCESTORS", "").strip()
-
 SESSION_TTL_DAYS = 14
 MAX_UPLOAD_MB_HARD = 60  # trần tuyệt đối của mọi request, trước cả hạn mức gói
 
