@@ -10,6 +10,8 @@ token, bấm ký. Kết quả là PDF có chữ ký PAdES mà Adobe Reader xác 
   webhook, gói dịch vụ và hạn mức theo tháng.
 - Luồng ký: người ký + người duyệt, thứ tự tuần tự hoặc song song, ô ký đặt
   sẵn, từ chối, huỷ, hết hạn, nhắc lại, cấp lại liên kết.
+- Tự ký nhanh: **Tạo tài liệu → “Tôi tự ký ngay”** — chọn chứng thư đang cắm (agent của máy hoặc mã ghép
+  cặp), tải PDF lên là chuyển thẳng sang trang ký; ký xong bấm tải PDF về gửi tay (Zalo, email…).
 - Nhật ký kiểm toán dạng chuỗi băm cho từng tài liệu; xác thực chữ ký tích hợp.
 - Đóng dấu thời gian (TSA) và lưu trữ dài hạn (LTV): PAdES B-B / B-T / B-LT / B-LTA.
 

@@ -311,7 +311,7 @@ export function renderNewDocument(container) {
             fileInput.value = "";
             fileInfoBox.hidden = true;
             fileDropZone.hidden = false;
-            submitBtn.disabled = true;
+            updateSubmit();
           },
         },
         "✕"
@@ -324,7 +324,7 @@ export function renderNewDocument(container) {
     if (!titleInput.value) {
       titleInput.value = file.name.replace(/\.pdf$/i, "");
     }
-    submitBtn.disabled = false;
+    updateSubmit();
   }
 
   fileInput.addEventListener("change", () => {
@@ -349,6 +349,75 @@ export function renderNewDocument(container) {
     type: "datetime-local",
   });
 
+  // "Tôi tự ký ngay": người đang đăng nhập là người ký duy nhất. Người nhận được khai đúng theo chứng thư đang
+  // cắm (tên CN + MST) để qua được kiểm tra danh tính, rồi chuyển thẳng sang trang ký; ký xong tải PDF ở đó.
+  let mode = "send";
+  let certificates = [];
+  const certSelect = el("select", {});
+  const pairingInput = el("input", { type: "text", inputMode: "numeric", maxLength: 6, placeholder: "Mã ghép cặp 6 số trên cửa sổ agent" });
+  const certStatus = el("p", { className: "muted" });
+
+  function fillCertificates(list, source) {
+    certificates = list;
+    certSelect.replaceChildren(
+      ...list.map((c, i) =>
+        el("option", { value: String(i) }, `${c.subject}${c.tax_code ? ` — MST ${c.tax_code}` : ""} (${c.issuer})`)
+      )
+    );
+    certStatus.textContent = list.length
+      ? `Đã thấy ${list.length} chứng thư từ ${source}.`
+      : "Agent đang chạy nhưng chưa thấy chứng thư nào — kiểm tra token đã cắm.";
+    updateSubmit();
+  }
+
+  async function loadDeviceCertificates() {
+    certStatus.textContent = "Đang tìm agent của máy này…";
+    try {
+      const res = await api("/api/agents");
+      if (res.online) {
+        fillCertificates(res.certificates, "agent của máy này");
+        return;
+      }
+      certificates = [];
+      certSelect.replaceChildren();
+      certStatus.textContent = res.device
+        ? "Agent của máy này đang tắt. Mở Web Signer Agent rồi bấm Tải lại, hoặc nhập mã ghép cặp."
+        : "Trình duyệt chưa được kích hoạt với agent. Bấm “Kích hoạt trình duyệt” trên agent, hoặc nhập mã ghép cặp.";
+    } catch (err) {
+      certStatus.textContent = err.message;
+    }
+    updateSubmit();
+  }
+
+  async function loadPairedCertificates() {
+    const code = pairingInput.value.trim();
+    if (!/^\d{6}$/.test(code)) {
+      toast("Mã ghép cặp gồm 6 chữ số.", "err");
+      return;
+    }
+    try {
+      const res = await api(`/api/agents/${code}/certificates`);
+      fillCertificates(res.certificates, `agent ${res.agent}`);
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  }
+
+  const selfBox = el(
+    "div",
+    { className: "form-group", hidden: true },
+    el("label", {}, "Chứng thư dùng để ký *"),
+    certSelect,
+    certStatus,
+    el(
+      "div",
+      { style: { display: "flex", gap: "8px", marginTop: "8px" } },
+      el("button", { type: "button", onClick: loadDeviceCertificates }, "Tải lại"),
+      pairingInput,
+      el("button", { type: "button", onClick: loadPairedCertificates }, "Dùng mã ghép cặp")
+    )
+  );
+
   const submitBtn = el(
     "button",
     {
@@ -357,6 +426,45 @@ export function renderNewDocument(container) {
       disabled: true,
     },
     "Tải lên & Chuyển sang chỉnh sửa"
+  );
+
+  function submitLabel() {
+    return mode === "self" ? "Tải lên & Ký ngay" : "Tải lên & Chuyển sang chỉnh sửa";
+  }
+
+  function updateSubmit() {
+    submitBtn.textContent = submitLabel();
+    submitBtn.disabled = !selectedFile || (mode === "self" && !certificates.length);
+  }
+
+  const messageGroup = el("div", { className: "form-group" }, el("label", {}, "Lời nhắn gửi kèm"), messageInput);
+  const expiryGroup = el("div", { className: "form-group" }, el("label", {}, "Thời hạn hoàn tất"), expiryInput);
+
+  function setMode(next) {
+    mode = next;
+    selfBox.hidden = mode !== "self";
+    messageGroup.hidden = mode === "self";
+    expiryGroup.hidden = mode === "self";
+    if (mode === "self" && !certificates.length) loadDeviceCertificates();
+    updateSubmit();
+  }
+
+  const modeGroup = el(
+    "div",
+    { className: "form-group" },
+    el("label", {}, "Cách ký"),
+    el(
+      "label",
+      { style: { display: "block", fontWeight: "normal", textTransform: "none", letterSpacing: "normal" } },
+      el("input", { type: "radio", name: "sign-mode", value: "send", checked: true, onChange: () => setMode("send") }),
+      " Gửi người nhận ký (đặt người ký, ô ký, rồi gửi)"
+    ),
+    el(
+      "label",
+      { style: { display: "block", fontWeight: "normal", textTransform: "none", letterSpacing: "normal" } },
+      el("input", { type: "radio", name: "sign-mode", value: "self", onChange: () => setMode("self") }),
+      " Tôi tự ký ngay bằng USB token, ký xong tải PDF về gửi"
+    )
   );
 
   const cancelBtn = el(
@@ -386,14 +494,21 @@ export function renderNewDocument(container) {
           const docData = {
             title: titleInput.value.trim() || selectedFile.name.replace(/\.pdf$/i, ""),
           };
-          if (messageInput.value.trim()) {
-            docData.message = messageInput.value.trim();
+          if (mode === "self") {
+            const cert = certificates[Number(certSelect.value) || 0];
+            if (!cert) throw new Error("Chưa chọn chứng thư để ký.");
+            docData.send = true;
+            docData.recipients = [{ name: cert.subject, ...(cert.tax_code ? { tax_code: cert.tax_code } : {}) }];
+          } else {
+            if (messageInput.value.trim()) {
+              docData.message = messageInput.value.trim();
+            }
+            if (expiryInput.value) {
+              docData.expires_at = new Date(expiryInput.value).toISOString();
+            }
           }
           if (externalRefInput.value.trim()) {
             docData.external_ref = externalRefInput.value.trim();
-          }
-          if (expiryInput.value) {
-            docData.expires_at = new Date(expiryInput.value).toISOString();
           }
 
           const formData = new FormData();
@@ -405,20 +520,27 @@ export function renderNewDocument(container) {
             body: formData,
           });
 
+          const selfLink = mode === "self" ? res.recipients?.[0]?.signing_url : null;
+          if (selfLink) {
+            // Trang ký tự thấy agent của máy (cookie thiết bị); ký xong có nút tải PDF.
+            location.href = selfLink;
+            return;
+          }
           toast("Đã tạo tài liệu thành công!", "ok");
           location.hash = `#/documents/${res.id}`;
         } catch (err) {
           toast(err.message, "err");
-          submitBtn.disabled = false;
-          submitBtn.textContent = "Tải lên & Chuyển sang chỉnh sửa";
+          updateSubmit();
         }
       },
     },
+    modeGroup,
     el("div", { className: "form-group" }, el("label", {}, "Tệp tài liệu PDF *"), fileDropZone, fileInfoBox),
+    selfBox,
     el("div", { className: "form-group" }, el("label", {}, "Tiêu đề tài liệu"), titleInput),
     el("div", { className: "form-group" }, el("label", {}, "Mã tham chiếu ngoài (external_ref)"), externalRefInput),
-    el("div", { className: "form-group" }, el("label", {}, "Thời hạn hoàn tất"), expiryInput),
-    el("div", { className: "form-group" }, el("label", {}, "Lời nhắn gửi kèm"), messageInput),
+    expiryGroup,
+    messageGroup,
     el("div", { className: "form-actions", style: { marginTop: "24px" } }, submitBtn, cancelBtn)
   );
 
