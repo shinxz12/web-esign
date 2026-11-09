@@ -353,20 +353,27 @@ export function renderNewDocument(container) {
   // cắm (tên CN + MST) để qua được kiểm tra danh tính, rồi chuyển thẳng sang trang ký; ký xong tải PDF ở đó.
   let mode = "send";
   let certificates = [];
-  const certSelect = el("select", {});
-  const pairingInput = el("input", { type: "text", inputMode: "numeric", maxLength: 6, placeholder: "Mã ghép cặp 6 số trên cửa sổ agent" });
-  const certStatus = el("p", { className: "muted" });
+  const certSelect = el("select", { hidden: true });
+  const pairingInput = el("input", {
+    type: "text",
+    inputMode: "numeric",
+    maxLength: 6,
+    placeholder: "Mã ghép cặp",
+    style: { width: "130px", flex: "none" },
+  });
+  const certStatus = el("span", { className: "muted", style: { fontSize: "13px", flex: "1 1 100%" } });
 
   function fillCertificates(list, source) {
     certificates = list;
+    certSelect.hidden = !list.length;
     certSelect.replaceChildren(
       ...list.map((c, i) =>
         el("option", { value: String(i) }, `${c.subject}${c.tax_code ? ` — MST ${c.tax_code}` : ""} (${c.issuer})`)
       )
     );
     certStatus.textContent = list.length
-      ? `Đã thấy ${list.length} chứng thư từ ${source}.`
-      : "Agent đang chạy nhưng chưa thấy chứng thư nào — kiểm tra token đã cắm.";
+      ? `${list.length} chứng thư từ ${source}.`
+      : "Agent chạy nhưng chưa thấy chứng thư — kiểm tra token đã cắm.";
     updateSubmit();
   }
 
@@ -380,9 +387,10 @@ export function renderNewDocument(container) {
       }
       certificates = [];
       certSelect.replaceChildren();
+      certSelect.hidden = true;
       certStatus.textContent = res.device
-        ? "Agent của máy này đang tắt. Mở Web Signer Agent rồi bấm Tải lại, hoặc nhập mã ghép cặp."
-        : "Trình duyệt chưa được kích hoạt với agent. Bấm “Kích hoạt trình duyệt” trên agent, hoặc nhập mã ghép cặp.";
+        ? "Agent của máy này đang tắt — mở agent rồi bấm ↻, hoặc nhập mã ghép cặp."
+        : "Chưa thấy agent — bấm “Kích hoạt trình duyệt” trên agent, hoặc nhập mã ghép cặp.";
     } catch (err) {
       certStatus.textContent = err.message;
     }
@@ -403,18 +411,19 @@ export function renderNewDocument(container) {
     }
   }
 
+  const nowrap = { whiteSpace: "nowrap", flex: "none" };
   const selfBox = el(
     "div",
     { className: "form-group", hidden: true },
     el("label", {}, "Chứng thư dùng để ký *"),
     certSelect,
-    certStatus,
     el(
       "div",
-      { style: { display: "flex", gap: "8px", marginTop: "8px" } },
-      el("button", { type: "button", onClick: loadDeviceCertificates }, "Tải lại"),
+      { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginTop: "6px" } },
+      certStatus,
+      el("button", { type: "button", title: "Tìm lại agent của máy này", style: nowrap, onClick: loadDeviceCertificates }, "↻"),
       pairingInput,
-      el("button", { type: "button", onClick: loadPairedCertificates }, "Dùng mã ghép cặp")
+      el("button", { type: "button", style: nowrap, onClick: loadPairedCertificates }, "Dùng mã")
     )
   );
 
@@ -439,31 +448,45 @@ export function renderNewDocument(container) {
 
   const messageGroup = el("div", { className: "form-group" }, el("label", {}, "Lời nhắn gửi kèm"), messageInput);
   const expiryGroup = el("div", { className: "form-group" }, el("label", {}, "Thời hạn hoàn tất"), expiryInput);
+  const titleGroup = el("div", { className: "form-group" }, el("label", {}, "Tiêu đề tài liệu"), titleInput);
+  const externalRefGroup = el(
+    "div",
+    { className: "form-group" },
+    el("label", {}, "Mã tham chiếu ngoài (external_ref)"),
+    externalRefInput
+  );
 
   function setMode(next) {
     mode = next;
-    selfBox.hidden = mode !== "self";
-    messageGroup.hidden = mode === "self";
-    expiryGroup.hidden = mode === "self";
-    if (mode === "self" && !certificates.length) loadDeviceCertificates();
+    const self = mode === "self";
+    selfBox.hidden = !self;
+    // Tự ký: chỉ cần tệp + chứng thư; tiêu đề lấy từ tên tệp.
+    for (const group of [messageGroup, expiryGroup, titleGroup, externalRefGroup]) group.hidden = self;
+    form.classList.toggle("compact", self);
+    if (self && !certificates.length) loadDeviceCertificates();
     updateSubmit();
   }
 
+  const optionStyle = { display: "flex", alignItems: "center", gap: "6px", fontWeight: "normal", textTransform: "none", letterSpacing: "normal", margin: 0 };
   const modeGroup = el(
     "div",
     { className: "form-group" },
     el("label", {}, "Cách ký"),
     el(
-      "label",
-      { style: { display: "block", fontWeight: "normal", textTransform: "none", letterSpacing: "normal" } },
-      el("input", { type: "radio", name: "sign-mode", value: "send", checked: true, onChange: () => setMode("send") }),
-      " Gửi người nhận ký (đặt người ký, ô ký, rồi gửi)"
-    ),
-    el(
-      "label",
-      { style: { display: "block", fontWeight: "normal", textTransform: "none", letterSpacing: "normal" } },
-      el("input", { type: "radio", name: "sign-mode", value: "self", onChange: () => setMode("self") }),
-      " Tôi tự ký ngay bằng USB token, ký xong tải PDF về gửi"
+      "div",
+      { style: { display: "flex", flexWrap: "wrap", gap: "8px 20px" } },
+      el(
+        "label",
+        { style: optionStyle },
+        el("input", { type: "radio", name: "sign-mode", value: "send", checked: true, onChange: () => setMode("send") }),
+        "Gửi người khác ký"
+      ),
+      el(
+        "label",
+        { style: optionStyle },
+        el("input", { type: "radio", name: "sign-mode", value: "self", onChange: () => setMode("self") }),
+        "Tôi tự ký ngay (USB token), ký xong tải PDF"
+      )
     )
   );
 
@@ -537,8 +560,8 @@ export function renderNewDocument(container) {
     modeGroup,
     el("div", { className: "form-group" }, el("label", {}, "Tệp tài liệu PDF *"), fileDropZone, fileInfoBox),
     selfBox,
-    el("div", { className: "form-group" }, el("label", {}, "Tiêu đề tài liệu"), titleInput),
-    el("div", { className: "form-group" }, el("label", {}, "Mã tham chiếu ngoài (external_ref)"), externalRefInput),
+    titleGroup,
+    externalRefGroup,
     expiryGroup,
     messageGroup,
     el("div", { className: "form-actions", style: { marginTop: "24px" } }, submitBtn, cancelBtn)

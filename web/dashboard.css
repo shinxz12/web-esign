@@ -556,6 +556,24 @@ button.small,
   background: rgba(59, 130, 246, 0.05);
 }
 
+/* Tự ký ngay: ô chọn tệp gọn một dòng để cả form vừa một màn hình */
+.new-doc-form.compact .file-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.new-doc-form.compact .drop-icon {
+  font-size: 22px;
+  margin: 0;
+}
+
+.new-doc-form.compact .drop-hint {
+  display: none;
+}
+
 .drop-icon {
   font-size: 36px;
   margin-bottom: 8px;
