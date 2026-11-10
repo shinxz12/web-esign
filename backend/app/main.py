@@ -36,6 +36,8 @@ from . import (
     db,
     devices,
     documents,
+    relay,
+    secrets_crypto,
     signing,
     storage,
     trust,
@@ -59,9 +61,11 @@ WEB_DIR = pathlib.Path(__file__).resolve().parents[2] / "web"
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     config.secret_key()  # thiếu/sai khoá thì chết ngay lúc khởi động, không phải lúc ký
+    secrets_crypto.validate_kek()
     config.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     await db.open_pool()
     await devices.import_legacy_registry()
+    await relay.hub.start_listener()
 
     trust.seed_trust_store()
     material = trust.load_trust_material()
@@ -86,6 +90,7 @@ async def lifespan(_: FastAPI):
         background.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await background
+        await relay.hub.stop_listener()
         await db.close_pool()
 
 

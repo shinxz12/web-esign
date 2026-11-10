@@ -22,31 +22,82 @@ from . import config
 logger = logging.getLogger("websigner.secrets")
 
 DEFAULT_KEK_ID = "k1"
+DEV_KEK_ID = "dev-fallback"
+
+
+def is_dev_mode() -> bool:
+    """Kiểm tra xem hệ thống có đang ở chế độ dev/test được phép dùng KEK dẫn xuất không."""
+    if os.environ.get("WEBSIGNER_ALLOW_DEV_KEK", "").lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    if config.WEBHOOK_ALLOW_PRIVATE:
+        return True
+    pub = config.public_url()
+    if not pub or not pub.lower().startswith("https://"):
+        return True
+    return False
 
 
 def current_kek_id() -> str:
+    if os.environ.get("WEBSIGNER_KEK"):
+        return os.environ.get("WEBSIGNER_KEK_ID", DEFAULT_KEK_ID)
+    if is_dev_mode():
+        return os.environ.get("WEBSIGNER_KEK_ID", DEV_KEK_ID)
     return os.environ.get("WEBSIGNER_KEK_ID", DEFAULT_KEK_ID)
+
+
+def validate_kek() -> None:
+    """Kiểm tra cấu hình KEK khi khởi động máy chủ (gọi trong lifespan).
+
+    Không bao giờ âm thầm dẫn xuất KEK trong môi trường production.
+    Bắt buộc phải có WEBSIGNER_KEK hợp lệ (32 bytes base64), trừ khi ở chế độ dev/test rõ ràng.
+    """
+    raw = os.environ.get("WEBSIGNER_KEK")
+    if raw:
+        try:
+            b = base64.b64decode(raw)
+            if len(b) != 32:
+                raise RuntimeError("WEBSIGNER_KEK phải là chuỗi base64 giải mã đúng 32 bytes")
+        except Exception as exc:
+            raise RuntimeError(f"WEBSIGNER_KEK không hợp lệ: {exc}") from exc
+        return
+
+    if not is_dev_mode():
+        raise RuntimeError(
+            "WEBSIGNER_KEK là bắt buộc (thiếu biến môi trường WEBSIGNER_KEK trong môi trường production)"
+        )
+    logger.warning("CẢNH BÁO: Đang dùng khoá KEK dẫn xuất tạm thời ('%s') cho môi trường dev/test", DEV_KEK_ID)
+
 
 def get_kek(kek_id: str | None = None) -> bytes:
     """Lấy khoá KEK (32 bytes) cho kek_id tương ứng.
 
     Nếu kek_id trùng với current_kek_id (hoặc None), ưu tiên WEBSIGNER_KEK.
     Nếu kek_id khác (khoá cũ trong quá trình rotation), tìm trong WEBSIGNER_OLD_KEKS.
+    Trong chế độ dev/test, chỉ dẫn xuất fallback khi kek_id là DEV_KEK_ID (hoặc None khi chưa cấu hình KEK).
+    Không bao giờ âm thầm dẫn xuất cho ID 'k1' khi thiếu WEBSIGNER_KEK.
     """
     cur_kid = current_kek_id()
-    if (kek_id is None or kek_id == cur_kid) and os.environ.get("WEBSIGNER_KEK"):
+    target_kid = kek_id or cur_kid
+
+    # 1. Kiểm tra WEBSIGNER_KEK
+    env_kek = os.environ.get("WEBSIGNER_KEK")
+    if env_kek:
         try:
-            kek_bytes = base64.b64decode(os.environ["WEBSIGNER_KEK"])
+            kek_bytes = base64.b64decode(env_kek)
             if len(kek_bytes) == 32:
-                return kek_bytes
+                if kek_id is None or kek_id == cur_kid or kek_id == os.environ.get("WEBSIGNER_KEK_ID", DEFAULT_KEK_ID):
+                    return kek_bytes
         except Exception:
             logger.warning("WEBSIGNER_KEK không phải chuỗi base64 hợp lệ 32 bytes")
 
+    # 2. Kiểm tra WEBSIGNER_OLD_KEKS
     old_keks = os.environ.get("WEBSIGNER_OLD_KEKS", "")
-    if old_keks and kek_id:
+    if old_keks and target_kid:
         for entry in old_keks.split(","):
             kid, _, b64 = entry.strip().partition(":")
-            if kid == kek_id and b64:
+            if kid == target_kid and b64:
                 try:
                     k = base64.b64decode(b64)
                     if len(k) == 32:
@@ -54,18 +105,13 @@ def get_kek(kek_id: str | None = None) -> bytes:
                 except Exception:
                     pass
 
-    env_kek = os.environ.get("WEBSIGNER_KEK")
-    if env_kek:
-        try:
-            kek_bytes = base64.b64decode(env_kek)
-            if len(kek_bytes) == 32:
-                return kek_bytes
-        except Exception:
-            pass
+    # 3. Fallback cho dev/test với ID riêng biệt dev-fallback
+    if is_dev_mode():
+        if target_kid == DEV_KEK_ID or (env_kek is None and target_kid == cur_kid):
+            seed = b"WEBSIGNER_KEK:" + target_kid.encode() + b":" + config.secret_key()
+            return hashlib.sha256(seed).digest()
 
-    seed = b"WEBSIGNER_KEK:" + (kek_id or "default").encode() + b":" + config.secret_key()
-    return hashlib.sha256(seed).digest()
-
+    raise RuntimeError(f"Không tìm thấy KEK hợp lệ cho kek_id='{target_kid}'")
 
 def encrypt(plaintext: bytes, kek_id: str | None = None) -> tuple[bytes, str]:
     """Mã hoá AES-256-GCM. Trả về (nonce + ciphertext + tag, kek_id)."""

@@ -44,6 +44,7 @@ async def _agent_certificates(session: AgentSession) -> list[dict]:
     """Hỏi agent danh sách chứng thư và nhớ bản DER để browser không gửi lên."""
     data = await session.call("list_certificates", {})
     session.certificates = {c["id"]: c for c in data.get("certificates", [])}
+    await session.save_certificates(session.certificates)
 
     def public(entry: dict) -> dict:
         """Bỏ phần nặng, thêm MST để trang web xem trước đúng hình sẽ ký."""
@@ -59,27 +60,31 @@ async def _agent_certificates(session: AgentSession) -> list[dict]:
 @router.get("/api/agents/{code}/certificates", summary="Đường dự phòng: tìm agent bằng mã ghép cặp")
 async def agent_certificates(request: Request, code: str) -> dict:
     # Mã 6 số: chặn dò hàng loạt. Lớp chặn thật vẫn là hộp thoại xác nhận + PIN.
-    security.enforce_rate(f"pair:{request.client.host if request.client else '-'}", 120)
+    await security.enforce_rate(f"pair:{request.client.host if request.client else '-'}", 120)
     try:
-        session = hub.get(code)
+        session = await hub.get(code)
         certificates = await _agent_certificates(session)
     except AgentUnavailable as exc:
         raise ApiError(404, "agent_unavailable", str(exc)) from exc
     except AgentError as exc:
         raise ApiError(502, "agent_error", str(exc)) from exc
+    except Exception:
+        logger.exception("Lỗi unhandled trong agent_certificates")
+        raise
     return {"agent": session.name, "platform": session.platform, "certificates": certificates}
 
 
-def _activation_url(request: Request, device_id: str) -> str:
+async def _activation_url(request: Request, device_id: str) -> str:
     """URL agent sẽ mở trong trình duyệt mặc định để cấp cookie thiết bị."""
-    return f"{base_url(request)}/activate?t={devices.issue_ticket(device_id)}"
+    ticket = await devices.issue_ticket(device_id)
+    return f"{base_url(request)}/activate?t={ticket}"
 
 
 @router.post("/api/devices", status_code=201, summary="Agent ghi danh máy")
 async def register_device(request: Request, registration: DeviceRegistration = Body(...)) -> dict:
-    security.enforce_rate(f"device:{request.client.host if request.client else '-'}", 30)
+    await security.enforce_rate(f"device:{request.client.host if request.client else '-'}", 30)
     device = await devices.register(registration.token, registration.name, registration.platform)
-    return {"device": device.to_dict(), "activate_url": _activation_url(request, device.id)}
+    return {"device": device.to_dict(), "activate_url": await _activation_url(request, device.id)}
 
 
 @router.post("/api/devices/activation", summary="Agent xin vé kích hoạt thêm một trình duyệt")
@@ -88,7 +93,7 @@ async def new_activation(request: Request, body: DeviceToken = Body(...)) -> dic
         device = await devices.by_token(body.token)
     except devices.DeviceError as exc:
         raise ApiError(404, "unknown_device", str(exc)) from exc
-    return {"device": device.to_dict(), "activate_url": _activation_url(request, device.id)}
+    return {"device": device.to_dict(), "activate_url": await _activation_url(request, device.id)}
 
 
 @router.get("/activate", include_in_schema=False)
@@ -121,7 +126,7 @@ async def device_agent(request: Request) -> dict:
     if device is None:
         return {"device": None, "online": False, "certificates": []}
     try:
-        session = hub.for_device(device.id)
+        session = await hub.for_device(device.id)
         certificates = await _agent_certificates(session)
     except AgentUnavailable:
         return {"device": device.to_dict(), "online": False, "certificates": []}
@@ -172,17 +177,17 @@ async def ws_agent(websocket: WebSocket) -> None:
             websocket=websocket,
             device_id=device_id,
         )
-        hub.register(session)
+        await hub.register(session)
         logger.info("Agent %s (thiết bị %s) đã kết nối", session.name, device_id or "—")
         await websocket.send_json({"type": "ready"})
 
         while True:
-            session.resolve(await websocket.receive_json())
+            await hub.handle_agent_message(session, await websocket.receive_json())
     except WebSocketDisconnect:
         pass
     finally:
         if session is not None:
-            hub.unregister(session)
+            await hub.unregister(session)
             logger.info("Agent %s đã ngắt", session.name)
 
 

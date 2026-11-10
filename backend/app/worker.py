@@ -27,6 +27,10 @@ async def _housekeeping() -> None:
         "DELETE FROM webhook_deliveries WHERE status <> 'pending' AND created_at < now() - interval '30 days'"
     )
     await db.system_execute("DELETE FROM emails WHERE status = 'sent' AND created_at < now() - interval '30 days'")
+    await db.system_execute("DELETE FROM activation_tickets WHERE expires_at < now()")
+    await db.system_execute("DELETE FROM agent_sessions WHERE expires_at < now()")
+    await db.system_execute("DELETE FROM agent_relay_requests WHERE expires_at < now()")
+    await db.system_execute("DELETE FROM rate_limits WHERE expires_at < now()")
     security.limiter.prune()
 
 

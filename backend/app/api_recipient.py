@@ -74,14 +74,14 @@ async def _agent_session(request: Request, body: signflow.SignRequest):
     """Agent nào sẽ ký: ưu tiên mã người dùng gõ, sau đó tới cookie thiết bị."""
     try:
         if body.agent_code:
-            return hub.get(body.agent_code)
+            return await hub.get(body.agent_code)
         device = await devices.browser_device(request.cookies.get(DEVICE_COOKIE))
         if device is None:
             raise AgentUnavailable(
                 "Trình duyệt này chưa gắn với máy nào. Mở agent trên máy có "
                 "token để kích hoạt, hoặc nhập mã ghép cặp."
             )
-        return hub.for_device(device.id)
+        return await hub.for_device(device.id)
     except AgentUnavailable as exc:
         raise ApiError(404, "agent_unavailable", str(exc)) from exc
 

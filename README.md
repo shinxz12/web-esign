@@ -577,9 +577,11 @@ tự tạo webhook, phải thêm tay trên GitHub một webhook `push` trỏ t�
 `manual_webhook_secret_github` của ứng dụng. Thiếu webhook thì push bao nhiêu
 lần cũng không có gì chạy.
 
-Backend phải chạy **một tiến trình**: relay agent và trạng thái pha 1 nằm
-trong bộ nhớ (xem phần Giới hạn). Hàng đợi webhook/email và mọi dữ liệu khác
-đã ở PostgreSQL.
+Backend hỗ trợ chạy **nhiều tiến trình / replica (multi-instance)** sau bộ cân bằng tải:
+relay agent được định tuyến qua PostgreSQL `LISTEN/NOTIFY`, khóa ký tài liệu phân tán bằng
+PostgreSQL advisory lock (`pg_try_advisory_lock`), vé kích hoạt trình duyệt và giới hạn
+tần suất (rate limits) lưu trữ tập trung trong cơ sở dữ liệu (không cần Redis). Hàng đợi
+webhook/email và mọi dữ liệu khác đều dùng PostgreSQL.
 
 ## Giới hạn hiện tại
 
@@ -587,11 +589,12 @@ trong bộ nhớ (xem phần Giới hạn). Hàng đợi webhook/email và mọi
   trong môi trường phát triển. Phần PKCS#11 (kể cả nhiều token cùng lúc), PFX,
   luồng ký, TSA, LTV đều đã chạy end-to-end.
 - Băm cố định SHA-256; chưa có SHA-384/512 hay EdDSA.
-- Hai pha ký và relay agent phải nằm trong cùng một tiến trình backend
-  (`PreparedSignature` giữ luồng ghi của pyHanko; agent nối WebSocket vào một
-  tiến trình cụ thể). Muốn chạy nhiều bản thì phải định tuyến agent qua kênh
-  chung (ví dụ PostgreSQL `LISTEN/NOTIFY`) và chuyển trạng thái pha 1 ra ngoài.
-  Giới hạn tần suất cũng nằm trong bộ nhớ tiến trình vì lý do đó.
+- Cơ chế multi-instance: Khi agent kết nối WebSocket vào một tiến trình (Instance A) và
+  request ký số từ người dùng gửi tới tiến trình khác (Instance B), bản tin được định tuyến
+  qua PostgreSQL (`agent_relay_requests` kết hợp `LISTEN/NOTIFY`). Khóa ký số per-document
+  được kiểm soát bởi PostgreSQL advisory lock trên kết nối chuyên biệt suốt prepare → sign →
+  finalize, đảm bảo người ký thứ hai nhận ngay 409 `signing_in_progress`. Vé kích hoạt trình
+  duyệt và bucket giới hạn tần suất cũng được lưu trữ tập trung kèm thời hạn trong PostgreSQL.
 - Chưa nối cổng thanh toán: đổi gói bằng `python -m app.admin set-plan`.
 - Chưa có mẫu tài liệu (template) và đặt ô ký theo chữ neo trong PDF: hệ thống
   tích hợp gửi toạ độ ô ký.
@@ -639,7 +642,7 @@ Hệ thống hoạt động theo chuẩn nền tảng SaaS dùng chung (SPEC §1
 
 ### 4. Biến môi trường mới
 
-- `WEBSIGNER_KEK`: Khóa mã hoá KEK 32 bytes (chuỗi base64) dùng mã hoá AES-256-GCM các bí mật lưu trữ (secret webhook ngẫu nhiên `whsec_…`, khoá liên kết ký riêng của từng tổ chức).
+- `WEBSIGNER_KEK`: Khóa mã hoá KEK 32 bytes (chuỗi base64) dùng mã hoá AES-256-GCM các bí mật lưu trữ (secret webhook ngẫu nhiên `whsec_…`, khoá liên kết ký riêng của từng tổ chức). **Bắt buộc** khi `WEBSIGNER_PUBLIC_URL` sử dụng HTTPS (môi trường production); nếu thiếu hoặc sai định dạng sẽ dừng ngay khi khởi động. Chỉ trong môi trường dev/test cục bộ mới cho phép fallback sang khoá dẫn xuất (gắn định danh riêng `dev-fallback`).
 - `WEBSIGNER_KEK_ID`: Định danh của khoá KEK đang hoạt động (mặc định: `k1`).
 - `WEBSIGNER_OLD_KEKS`: Danh sách các khoá KEK cũ khi xoay vòng, phân tách bằng dấu phẩy (dạng `kid1:base64...,kid2:base64...`).
 

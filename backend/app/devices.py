@@ -25,7 +25,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import db
@@ -39,8 +39,7 @@ LEGACY_REGISTRY = DATA_DIR / "devices.json"
 # Đủ cho trình duyệt mặc định khởi động nguội; ngắn hơn thì máy chậm sẽ hỏng.
 TICKET_TTL_SECONDS = 120.0
 
-# Ticket nằm trong RAM: mất khi restart là đúng — nó chỉ sống vài giây.
-_tickets: dict[str, tuple[str, float]] = {}
+# Vé kích hoạt chuyển sang lưu trong PostgreSQL (bảng activation_tickets)
 
 
 class DeviceError(RuntimeError):
@@ -97,32 +96,29 @@ async def touch(device_id: str) -> None:
     await db.system_execute("UPDATE devices SET last_seen = now() WHERE id = %s", (device_id,))
 
 
-def issue_ticket(device_id: str) -> str:
-    """Vé một lần để đổi lấy cookie thiết bị."""
-    _expire_tickets()
+async def issue_ticket(device_id: str) -> str:
+    """Vé một lần để đổi lấy cookie thiết bị (lưu trong PostgreSQL kèm thời hạn)."""
     ticket = secrets.token_urlsafe(24)
-    _tickets[ticket] = (device_id, time.monotonic() + TICKET_TTL_SECONDS)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=TICKET_TTL_SECONDS)
+    await db.system_execute(
+        "INSERT INTO activation_tickets (ticket, device_id, expires_at) VALUES (%s, %s, %s)",
+        (ticket, device_id, expires_at),
+    )
     return ticket
 
 
 async def claim_ticket(ticket: str) -> str:
     """-> device_id. Vé bị xoá ngay cả khi lỗi: dùng một lần là một lần."""
-    _expire_tickets()
-    entry = _tickets.pop(ticket, None)
-    if entry is None:
+    row = await db.system_fetchone(
+        "DELETE FROM activation_tickets WHERE ticket = %s AND expires_at > now() RETURNING device_id",
+        (ticket,),
+    )
+    if row is None:
         raise DeviceError("Liên kết kích hoạt đã hết hạn hoặc đã dùng rồi")
-    device_id, _ = entry
+    device_id = row["device_id"]
     if await by_id(device_id) is None:
         raise DeviceError("Thiết bị đã bị thu hồi")
     return device_id
-
-
-def _expire_tickets() -> None:
-    now = time.monotonic()
-    for ticket, (_, expires) in list(_tickets.items()):
-        if expires <= now:
-            _tickets.pop(ticket, None)
-
 
 async def bind_browser(browser_token: str, device_id: str) -> None:
     await db.system_execute(

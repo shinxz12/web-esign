@@ -111,7 +111,7 @@ async def _from_api_key(request: Request, header: str) -> Principal:
             raise ApiError(404, "not_found", "Không tìm thấy tổ chức")
         db.set_tenant_id(tenant["id"])
         plan = plans.get(tenant["plan"])
-        security.enforce_rate(f"partner:{partner['id']}", plan.api_requests_per_minute)
+        await security.enforce_rate(f"partner:{partner['id']}:tenant:{tenant['id']}", plan.api_requests_per_minute)
         return Principal(
             org={
                 "id": tenant["id"],
@@ -137,7 +137,7 @@ async def _from_api_key(request: Request, header: str) -> Principal:
         raise ApiError(401, "invalid_api_key", "Khoá API không hợp lệ hoặc đã bị thu hồi")
     db.set_tenant_id(ctx["org_id"])
     plan = plans.get(ctx["org_plan"])
-    security.enforce_rate(f"key:{ctx['key_id']}", plan.api_requests_per_minute)
+    await security.enforce_rate(f"key:{ctx['key_id']}", plan.api_requests_per_minute)
     return Principal(org=_org(ctx), plan=plan, api_key_id=ctx["key_id"])
 
 

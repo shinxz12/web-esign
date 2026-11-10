@@ -161,8 +161,19 @@ class RateLimiter:
 limiter = RateLimiter()
 
 
-def enforce_rate(key: str, per_minute: int, burst: int | None = None) -> None:
-    wait = limiter.hit(key, per_minute, burst)
+async def enforce_rate(key: str, per_minute: int, burst: int | None = None) -> None:
+    from . import db
+
+    wait: float | None = None
+    if db.is_pool_open():
+        try:
+            wait = await db.take_rate_limit(key, per_minute, burst)
+        except Exception as exc:
+            logger.warning("Lỗi take_rate_limit trên PostgreSQL: %s; fallback RAM", exc)
+            wait = limiter.hit(key, per_minute, burst)
+    else:
+        wait = limiter.hit(key, per_minute, burst)
+
     if wait is not None:
         retry = max(1, int(wait + 0.999))
         raise ApiError(

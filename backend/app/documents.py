@@ -357,8 +357,10 @@ async def list_documents(
             (list(by_doc),),
         ):
             by_doc[r["document_id"]].append(r)
+    docs = [document_view(row, by_doc[row["id"]]) for row in page]
     return {
-        "data": [document_view(row, by_doc[row["id"]]) for row in page],
+        "items": docs,
+        "data": docs,
         "next_cursor": _encode_cursor(page[-1]) if more else None,
     }
 

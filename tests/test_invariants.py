@@ -438,5 +438,46 @@ def test_layout_luu_tru_khoa_moi_va_fallback_khoa_cu(tmp_path: pathlib.Path, mon
     legacy_file.parent.mkdir(parents=True, exist_ok=True)
     legacy_file.write_bytes("Bản cũ".encode("utf-8"))
 
-    # Đọc rev1 với org_id nhưng chưa có ở layout mới -> tự fallback về tệp cũ
     assert storage.read_revision(org_id, doc_id, 1) == "Bản cũ".encode("utf-8")
+
+def test_finding_9_kek_startup_validation_va_dev_fallback_id(monkeypatch) -> None:
+    # 1. Trong production (URL HTTPS), thiếu WEBSIGNER_KEK phải nổ lỗi ngay lúc khởi động
+    monkeypatch.setenv("WEBSIGNER_PUBLIC_URL", "https://signer.example.com")
+    monkeypatch.delenv("WEBSIGNER_KEK", raising=False)
+    monkeypatch.delenv("WEBSIGNER_ALLOW_DEV_KEK", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(config, "WEBHOOK_ALLOW_PRIVATE", False)
+
+    with pytest.raises(RuntimeError, match="WEBSIGNER_KEK là bắt buộc"):
+        secrets_crypto.validate_kek()
+
+    # 2. Chuỗi WEBSIGNER_KEK không hợp lệ (sai độ dài hoặc không phải base64) phải nổ lỗi
+    monkeypatch.setenv("WEBSIGNER_KEK", "khong-phai-base64-32-byte")
+    with pytest.raises(RuntimeError, match="WEBSIGNER_KEK"):
+        secrets_crypto.validate_kek()
+
+    # 3. Khi thiếu WEBSIGNER_KEK, không bao giờ âm thầm dẫn xuất cho kid 'k1'
+    monkeypatch.delenv("WEBSIGNER_KEK", raising=False)
+    with pytest.raises(RuntimeError, match="Không tìm thấy KEK hợp lệ"):
+        secrets_crypto.get_kek("k1")
+
+    # 4. Ở chế độ dev/test rõ ràng, fallback dùng kid riêng biệt 'dev-fallback'
+    monkeypatch.setenv("WEBSIGNER_ALLOW_DEV_KEK", "1")
+    assert secrets_crypto.current_kek_id() == secrets_crypto.DEV_KEK_ID
+    fallback_kek = secrets_crypto.get_kek(secrets_crypto.DEV_KEK_ID)
+    assert len(fallback_kek) == 32
+
+
+def test_finding_17_partner_on_behalf_of_rate_limit_per_tenant() -> None:
+    # Khóa rate limit cho On-Behalf-Of bao gồm cả tenant id
+    partner_id = "part_abc"
+    tenant_1 = "org_t1"
+    tenant_2 = "org_t2"
+    key1 = f"partner:{partner_id}:tenant:{tenant_1}"
+    key2 = f"partner:{partner_id}:tenant:{tenant_2}"
+    assert key1 != key2
+    # Thử qua limiter cục bộ bảo đảm 2 tenant độc lập bucket
+    limiter = security.RateLimiter()
+    assert limiter.hit(key1, per_minute=60, burst=1) is None
+    assert limiter.hit(key1, per_minute=60, burst=1) is not None
+    assert limiter.hit(key2, per_minute=60, burst=1) is None

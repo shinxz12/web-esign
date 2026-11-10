@@ -15,11 +15,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import weakref
-
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 from pydantic import BaseModel, Field
 
-from . import documents, handwriting, signing, storage
+from . import db, documents, handwriting, signing, storage
 from .errors import ApiError, bad_request, conflict
 from .relay import AgentError, AgentSession
 
@@ -38,16 +38,7 @@ class SignRequest(BaseModel):
     use_logo: bool = True
 
 
-_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-
-
-def _lock(doc_id: str) -> asyncio.Lock:
-    lock = _locks.get(doc_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[doc_id] = lock
-    return lock
-
+# Khoá ký phân tán per-document bằng PostgreSQL advisory lock
 
 def _placement(
     doc: dict, recipient: dict, page: int | None, box: tuple[float, float, float, float] | None
@@ -71,11 +62,31 @@ def _require_method(recipient: dict, method: str) -> None:
         )
 
 
-def _acquire(doc_id: str) -> asyncio.Lock:
-    lock = _lock(doc_id)
-    if lock.locked():
-        raise conflict("signing_in_progress", "Một người khác đang ký tài liệu này, thử lại sau ít phút")
-    return lock
+@asynccontextmanager
+async def _acquire(doc_id: str) -> AsyncIterator[None]:
+    """Khóa ký phân tán theo tài liệu dùng PostgreSQL advisory lock.
+
+    Giữ khoá trên một kết nối chuyên biệt suốt prepare -> token -> finalize -> ghi.
+    Người ký song song nhận ngay 409 signing_in_progress thay vì treo chờ PIN.
+    """
+    async with db.system_connection() as conn:
+        cur = await conn.execute(
+            "SELECT pg_try_advisory_lock(hashtext('doc_lock'), hashtext(%s)) AS ok",
+            (doc_id,),
+        )
+        row = await cur.fetchone()
+        if not row or not row["ok"]:
+            raise conflict("signing_in_progress", "Một người khác đang ký tài liệu này, thử lại sau ít phút")
+        try:
+            yield
+        finally:
+            try:
+                await conn.execute(
+                    "SELECT pg_advisory_unlock(hashtext('doc_lock'), hashtext(%s))",
+                    (doc_id,),
+                )
+            except Exception:
+                pass
 
 
 class HandwriteRequest(BaseModel):
@@ -147,6 +158,9 @@ async def sign(
     _require_method(recipient, "digital")
 
     cert_entry = session.certificates.get(request.cert_id)
+    if cert_entry is None and hasattr(session, "refresh_certificates"):
+        await session.refresh_certificates()
+        cert_entry = session.certificates.get(request.cert_id)
     if cert_entry is None:
         raise conflict("unknown_certificate", "Chưa nạp danh sách chứng thư của agent, hãy kết nối lại")
     cert_der = base64.b64decode(cert_entry["cert_b64"])

@@ -143,15 +143,15 @@ async def _start_session(request: Request, response: Response, user: dict) -> di
 async def register(request: Request, response: Response, body: RegisterRequest) -> dict:
     if not ALLOW_SIGNUP:
         raise ApiError(403, "signup_disabled", "Máy chủ này không mở đăng ký tự do")
-    security.enforce_rate(f"register:{client_ip(request)}", 10)
+    await security.enforce_rate(f"register:{client_ip(request)}", 60, burst=30)
     user = await accounts.register(body.org_name, body.name, body.email, body.password)
     return await _start_session(request, response, user)
 
 
 @router.post("/auth/login", summary="Đăng nhập")
 async def login(request: Request, response: Response, body: LoginRequest) -> dict:
-    security.enforce_rate(f"login-ip:{client_ip(request)}", 20)
-    security.enforce_rate(f"login-email:{body.email.strip().lower()}", 10)
+    await security.enforce_rate(f"login-ip:{client_ip(request)}", 20)
+    await security.enforce_rate(f"login-email:{body.email.strip().lower()}", 10)
     user = await accounts.authenticate(body.email, body.password)
     if user is None:
         raise ApiError(401, "invalid_credentials", "Email hoặc mật khẩu không đúng")
@@ -200,28 +200,28 @@ async def change_password(body: PasswordChange, who: Principal = Depends(dashboa
 
 @router.post("/auth/forgot", status_code=202, summary="Gửi email đặt lại mật khẩu")
 async def forgot(request: Request, body: ForgotRequest) -> dict:
-    security.enforce_rate(f"forgot:{client_ip(request)}", 5)
+    await security.enforce_rate(f"forgot:{client_ip(request)}", 5)
     await accounts.request_password_reset(body.email, base_url(request))
     return {"ok": True}
 
 
 @router.post("/auth/reset", status_code=204, summary="Đặt mật khẩu mới bằng liên kết trong email")
 async def reset(request: Request, body: ResetRequest) -> Response:
-    security.enforce_rate(f"reset:{client_ip(request)}", 10)
+    await security.enforce_rate(f"reset:{client_ip(request)}", 10)
     await accounts.reset_password(body.token, body.password)
     return Response(status_code=204)
 
 
 @router.get("/auth/invite/{token}", summary="Thông tin lời mời thành viên")
 async def invite_info(request: Request, token: str) -> dict:
-    security.enforce_rate(f"invite:{client_ip(request)}", 30)
+    await security.enforce_rate(f"invite:{client_ip(request)}", 30)
     row = await accounts.peek_user_token(token, "invite")
     return {"email": row["email"], "name": row["name"], "org_name": row["org_name"]}
 
 
 @router.post("/auth/accept-invite", summary="Nhận lời mời: đặt tên, mật khẩu và đăng nhập")
 async def accept_invite(request: Request, response: Response, body: AcceptInvite) -> dict:
-    security.enforce_rate(f"invite:{client_ip(request)}", 30)
+    await security.enforce_rate(f"invite:{client_ip(request)}", 30)
     user = await accounts.accept_invite(body.token, body.name, body.password)
     return await _start_session(request, response, user)
 

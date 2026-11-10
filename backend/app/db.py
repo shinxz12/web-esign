@@ -100,6 +100,19 @@ def _require_pool() -> AsyncConnectionPool:
         raise RuntimeError("Chưa mở kết nối cơ sở dữ liệu")
     return _pool
 
+def is_pool_open() -> bool:
+    return _pool is not None
+
+
+async def take_rate_limit(key: str, per_minute: int, burst: int | None = None) -> float | None:
+    row = await system_fetchone(
+        "SELECT take_rate_limit(%s, %s, %s) AS wait",
+        (key, per_minute, burst),
+    )
+    if not row or row["wait"] is None or row["wait"] <= 0.0:
+        return None
+    return float(row["wait"])
+
 
 # -----------------------------------------------------------------------------
 # Lối vào mặc định: Tenant-Scoped (SPEC §3)
