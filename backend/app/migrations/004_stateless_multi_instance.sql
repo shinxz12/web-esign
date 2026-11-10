@@ -80,6 +80,7 @@ CREATE OR REPLACE FUNCTION take_rate_limit(
 RETURNS double precision
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_capacity double precision := COALESCE(p_burst, p_per_minute)::double precision;
@@ -89,35 +90,39 @@ DECLARE
     v_updated timestamptz;
     v_elapsed double precision;
     v_wait double precision;
+    v_inserted boolean := false;
 BEGIN
+    -- 1. Bảo đảm dòng tồn tại (nguyên tử qua ON CONFLICT DO NOTHING)
+    INSERT INTO public.rate_limits (key, tokens, updated_at, expires_at)
+    VALUES (p_key, v_capacity, v_now, v_now + interval '10 minutes')
+    ON CONFLICT (key) DO NOTHING
+    RETURNING true INTO v_inserted;
+
+    -- 2. Khoá dòng đó để tuần tự hoá mọi yêu cầu đồng thời
     SELECT tokens, updated_at INTO v_tokens, v_updated
-    FROM rate_limits
+    FROM public.rate_limits
     WHERE key = p_key
     FOR UPDATE;
 
-    IF NOT FOUND THEN
-        INSERT INTO rate_limits (key, tokens, updated_at, expires_at)
-        VALUES (p_key, v_capacity - 1.0, v_now, v_now + interval '10 minutes')
-        ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-        RETURNING tokens, updated_at INTO v_tokens, v_updated;
-
-        IF v_tokens = v_capacity - 1.0 THEN
-            RETURN 0.0;
-        END IF;
+    IF v_inserted IS TRUE THEN
+        -- Nếu vừa tạo mới, bắt đầu từ v_capacity
+        v_tokens := v_capacity;
+    ELSE
+        -- Nếu đã tồn tại từ trước, bù token theo thời gian trôi qua
+        v_elapsed := EXTRACT(EPOCH FROM (v_now - v_updated));
+        v_tokens := LEAST(v_capacity, v_tokens + v_elapsed * v_rate);
     END IF;
 
-    v_elapsed := EXTRACT(EPOCH FROM (v_now - v_updated));
-    v_tokens := LEAST(v_capacity, v_tokens + v_elapsed * v_rate);
-
+    -- 3. Trừ 1 token nếu còn đủ, ngược lại tính thời gian phải chờ
     IF v_tokens >= 1.0 THEN
-        UPDATE rate_limits
+        UPDATE public.rate_limits
         SET tokens = v_tokens - 1.0,
             updated_at = v_now,
             expires_at = v_now + interval '10 minutes'
         WHERE key = p_key;
         RETURN 0.0;
     ELSE
-        UPDATE rate_limits
+        UPDATE public.rate_limits
         SET tokens = v_tokens,
             updated_at = v_now,
             expires_at = v_now + interval '10 minutes'
@@ -129,14 +134,9 @@ END;
 $$;
 
 -- -----------------------------------------------------------------------------
--- 5. Cấp quyền cho websigner_tenant
+-- 5. Thu hồi quyền truy cập từ websigner_tenant (Finding #2 & #11)
 -- -----------------------------------------------------------------------------
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON
-    activation_tickets,
-    agent_sessions,
-    agent_relay_requests,
-    rate_limits
-TO websigner_tenant;
-
-GRANT EXECUTE ON FUNCTION take_rate_limit(text, integer, integer) TO websigner_tenant;
+REVOKE ALL ON activation_tickets, agent_sessions, agent_relay_requests, rate_limits FROM websigner_tenant;
+REVOKE ALL ON FUNCTION take_rate_limit(text, integer, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION take_rate_limit(text, integer, integer) FROM websigner_tenant;

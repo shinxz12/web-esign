@@ -377,7 +377,33 @@ async def _post(session: aiohttp.ClientSession, row: dict) -> tuple[int | None, 
         logger.exception("Lỗi chuẩn bị/gửi webhook delivery %s: %s", row.get("id"), exc)
         return None, f"SecretError: {exc}"[:500]
 
-async def deliver_due(limit: int = 50) -> int:
+async def _deliver_one(session: aiohttp.ClientSession, row: dict) -> None:
+    status_code, error = await _post(session, row)
+    attempts = row["attempts"] + 1
+    if error is None:
+        await db.system_execute(
+            "UPDATE webhook_deliveries SET status = 'succeeded', attempts = %s, "
+            "last_status_code = %s, last_error = NULL, delivered_at = now() WHERE id = %s",
+            (attempts, status_code, row["id"]),
+        )
+        return
+    give_up = attempts > len(RETRY_DELAYS)
+    logger.info("Webhook %s lần %s thất bại: %s", row["id"], attempts, error)
+    await db.system_execute(
+        "UPDATE webhook_deliveries SET status = %s, attempts = %s, last_status_code = %s, "
+        "last_error = %s, next_attempt_at = now() + make_interval(secs => %s) WHERE id = %s",
+        (
+            "failed" if give_up else "pending",
+            attempts,
+            status_code,
+            error,
+            0 if give_up else RETRY_DELAYS[attempts - 1],
+            row["id"],
+        ),
+    )
+
+
+async def deliver_due(limit: int = 10) -> int:
     """Xử lý hàng đợi webhook cross-tenant bằng system connection."""
     async with db.system_transaction() as conn:
         cur = await conn.execute(
@@ -399,28 +425,5 @@ async def deliver_due(limit: int = 50) -> int:
         )
 
     async with aiohttp.ClientSession(connector=_connector(), timeout=TIMEOUT) as session:
-        for row in rows:
-            status_code, error = await _post(session, row)
-            attempts = row["attempts"] + 1
-            if error is None:
-                await db.system_execute(
-                    "UPDATE webhook_deliveries SET status = 'succeeded', attempts = %s, "
-                    "last_status_code = %s, last_error = NULL, delivered_at = now() WHERE id = %s",
-                    (attempts, status_code, row["id"]),
-                )
-                continue
-            give_up = attempts > len(RETRY_DELAYS)
-            logger.info("Webhook %s lần %s thất bại: %s", row["id"], attempts, error)
-            await db.system_execute(
-                "UPDATE webhook_deliveries SET status = %s, attempts = %s, last_status_code = %s, "
-                "last_error = %s, next_attempt_at = now() + make_interval(secs => %s) WHERE id = %s",
-                (
-                    "failed" if give_up else "pending",
-                    attempts,
-                    status_code,
-                    error,
-                    0 if give_up else RETRY_DELAYS[attempts - 1],
-                    row["id"],
-                ),
-            )
+        await asyncio.gather(*[_deliver_one(session, row) for row in rows])
     return len(rows)

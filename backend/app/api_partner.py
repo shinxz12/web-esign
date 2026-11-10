@@ -59,11 +59,12 @@ async def _check_idempotency(scope: str, key: str, fingerprint: bytes) -> tuple[
     return row["response_status"], row["response_body"]
 
 
-async def _save_idempotency(scope: str, key: str, status: int, body: dict) -> None:
+async def _save_idempotency(scope: str, key: str, status: int, body: dict, *, conn: db.Conn | None = None) -> None:
     await db.system_execute(
         "UPDATE idempotency_keys SET response_status = %s, response_body = %s "
         "WHERE org_id = %s AND key = %s",
         (status, Jsonb(body), scope, key),
+        conn=conn,
     )
 
 
@@ -134,54 +135,60 @@ async def create_tenant(request: Request, body: TenantCreate, who: Principal = D
         signing_key = secrets_crypto.new_signing_key()
         key_ciphertext, kek_id = secrets_crypto.encrypt_secret(signing_key)
 
-        if external_id:
-            row = await db.system_fetchone(
-                "INSERT INTO organizations (id, name, plan, partner_id, external_id, settings, embed_origins, "
-                "                           signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'kek') "
-                "ON CONFLICT (partner_id, external_id) WHERE external_id IS NOT NULL DO NOTHING RETURNING *",
-                (
-                    org_id,
-                    body.name.strip(),
-                    body.plan,
-                    partner_id,
-                    external_id,
-                    Jsonb(settings),
-                    embed_origins,
-                    key_ciphertext,
-                    kek_id,
-                ),
-            )
-            if row is None:
-                row = await db.system_fetchone(
-                    "SELECT * FROM organizations WHERE partner_id = %s AND external_id = %s",
-                    (partner_id, external_id),
+        async with db.system_transaction() as conn:
+            if external_id:
+                cur = await conn.execute(
+                    "INSERT INTO organizations (id, name, plan, partner_id, external_id, settings, embed_origins, "
+                    "                           signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'kek') "
+                    "ON CONFLICT (partner_id, external_id) WHERE external_id IS NOT NULL DO NOTHING RETURNING *",
+                    (
+                        org_id,
+                        body.name.strip(),
+                        body.plan,
+                        partner_id,
+                        external_id,
+                        Jsonb(settings),
+                        embed_origins,
+                        key_ciphertext,
+                        kek_id,
+                    ),
                 )
-                view = tenant_view(row)
-                if idem_key:
-                    await _save_idempotency(idem_scope, idem_key, 200, view)
-                return JSONResponse(view, status_code=200)
-        else:
-            row = await db.system_fetchone(
-                "INSERT INTO organizations (id, name, plan, partner_id, external_id, settings, embed_origins, "
-                "                           signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'kek') RETURNING *",
-                (
-                    org_id,
-                    body.name.strip(),
-                    body.plan,
-                    partner_id,
-                    None,
-                    Jsonb(settings),
-                    embed_origins,
-                    key_ciphertext,
-                    kek_id,
-                ),
-            )
-        view = tenant_view(row)
-        if idem_key:
-            await _save_idempotency(idem_scope, idem_key, 201, view)
-        return JSONResponse(view, status_code=201)
+                row = await cur.fetchone()
+                if row is None:
+                    cur = await conn.execute(
+                        "SELECT * FROM organizations WHERE partner_id = %s AND external_id = %s",
+                        (partner_id, external_id),
+                    )
+                    row = await cur.fetchone()
+                    status_code = 200
+                else:
+                    status_code = 201
+            else:
+                cur = await conn.execute(
+                    "INSERT INTO organizations (id, name, plan, partner_id, external_id, settings, embed_origins, "
+                    "                           signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'kek') RETURNING *",
+                    (
+                        org_id,
+                        body.name.strip(),
+                        body.plan,
+                        partner_id,
+                        None,
+                        Jsonb(settings),
+                        embed_origins,
+                        key_ciphertext,
+                        kek_id,
+                    ),
+                )
+                row = await cur.fetchone()
+                status_code = 201
+
+            view = tenant_view(row)
+            if idem_key:
+                await _save_idempotency(idem_scope, idem_key, status_code, view, conn=conn)
+
+        return JSONResponse(view, status_code=status_code)
     except BaseException:
         if idem_key:
             await _clear_idempotency(idem_scope, idem_key)
@@ -288,28 +295,31 @@ async def create_tenant_api_key(
         prefix = secret[: len(accounts.API_KEY_PREFIX) + 6]
         key_id = security.new_id("key")
 
-        cur_count = await db.system_fetchone(
-            "SELECT count(*) AS n FROM api_keys WHERE org_id = %s AND revoked_at IS NULL", (id,)
-        )
-        if cur_count and cur_count["n"] >= plan.max_api_keys:
-            raise ApiError(402, "quota_exceeded", f"Gói {plan.name} tối đa {plan.max_api_keys} khoá API")
+        async with db.system_transaction() as conn:
+            cur_count = await db.system_fetchone(
+                "SELECT count(*) AS n FROM api_keys WHERE org_id = %s AND revoked_at IS NULL", (id,),
+                conn=conn,
+            )
+            if cur_count and cur_count["n"] >= plan.max_api_keys:
+                raise ApiError(402, "quota_exceeded", f"Gói {plan.name} tối đa {plan.max_api_keys} khoá API")
 
-        row = await db.system_fetchone(
-            "INSERT INTO api_keys (id, org_id, name, prefix, key_hash) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING *",
-            (key_id, id, body.name.strip(), prefix, security.token_hash(secret)),
-        )
-        result = {
-            "key": {
-                "id": row["id"],
-                "name": row["name"],
-                "prefix": row["prefix"],
-                "created_at": row["created_at"].isoformat(),
-            },
-            "secret": secret,
-        }
-        if idem_key:
-            await _save_idempotency(id, idem_key, 201, result)
+            cur = await conn.execute(
+                "INSERT INTO api_keys (id, org_id, name, prefix, key_hash) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING *",
+                (key_id, id, body.name.strip(), prefix, security.token_hash(secret)),
+            )
+            row = await cur.fetchone()
+            result = {
+                "key": {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "prefix": row["prefix"],
+                    "created_at": row["created_at"].isoformat(),
+                },
+                "secret": secret,
+            }
+            if idem_key:
+                await _save_idempotency(id, idem_key, 201, result, conn=conn)
         return result
     except BaseException:
         if idem_key:
@@ -347,28 +357,30 @@ async def create_tenant_webhook(
     try:
         url = webhooks.validate_url(body.url)
         events = webhooks._validate_events(body.events)
-
-        cur_count = await db.system_fetchone(
-            "SELECT count(*) AS n FROM webhook_endpoints WHERE org_id = %s", (id,)
-        )
-        if cur_count and cur_count["n"] >= plan.max_webhooks:
-            raise ApiError(402, "quota_exceeded", f"Gói {plan.name} tối đa {plan.max_webhooks} webhook")
-
         raw_secret = secrets_crypto.new_webhook_secret()
         ciphertext, kek_id = secrets_crypto.encrypt_secret(raw_secret)
         wh_id = security.new_id("wh")
 
-        row = await db.system_fetchone(
-            "INSERT INTO webhook_endpoints (id, org_id, url, description, events, secret_scheme, secret_ciphertext, kek_id) "
-            "VALUES (%s, %s, %s, %s, %s, 'kek', %s, %s) RETURNING *",
-            (wh_id, id, url, body.description, events, ciphertext, kek_id),
-        )
-        result = {
-            "endpoint": webhooks.endpoint_view(row),
-            "secret": raw_secret,
-        }
-        if idem_key:
-            await _save_idempotency(id, idem_key, 201, result)
+        async with db.system_transaction() as conn:
+            cur_count = await db.system_fetchone(
+                "SELECT count(*) AS n FROM webhook_endpoints WHERE org_id = %s", (id,),
+                conn=conn,
+            )
+            if cur_count and cur_count["n"] >= plan.max_webhooks:
+                raise ApiError(402, "quota_exceeded", f"Gói {plan.name} tối đa {plan.max_webhooks} webhook")
+
+            cur = await conn.execute(
+                "INSERT INTO webhook_endpoints (id, org_id, url, description, events, secret_scheme, secret_ciphertext, kek_id) "
+                "VALUES (%s, %s, %s, %s, %s, 'kek', %s, %s) RETURNING *",
+                (wh_id, id, url, body.description, events, ciphertext, kek_id),
+            )
+            row = await cur.fetchone()
+            result = {
+                "endpoint": webhooks.endpoint_view(row),
+                "secret": raw_secret,
+            }
+            if idem_key:
+                await _save_idempotency(id, idem_key, 201, result, conn=conn)
         return result
     except BaseException:
         if idem_key:

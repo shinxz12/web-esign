@@ -28,6 +28,9 @@ services:
       WEBSIGNER_TSA_URL: ${WEBSIGNER_TSA_URL:-}
       WEBSIGNER_SMTP_URL: ${WEBSIGNER_SMTP_URL:-}
       WEBSIGNER_MAIL_FROM: ${WEBSIGNER_MAIL_FROM:-Web Signer <no-reply@localhost>}
+      WEBSIGNER_KEK: ${WEBSIGNER_KEK:-}
+      WEBSIGNER_KEK_ID: ${WEBSIGNER_KEK_ID:-k1}
+      WEBSIGNER_DEV_MODE: ${WEBSIGNER_DEV_MODE:-0}
     ports:
       - "8000:8000"
     volumes:

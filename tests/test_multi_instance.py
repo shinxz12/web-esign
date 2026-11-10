@@ -205,3 +205,115 @@ def test_multi_instance_rate_limit_shared(cluster):
     status_7, res_7 = be_b.client().post("/api/auth/forgot", {"email": "rate-overflow-b@demo.vn"})
     assert status_7 == 429, res_7
     assert res_7["code"] == "rate_limited"
+
+
+def test_take_rate_limit_concurrent_first_burst(multi_lab):
+    """Finding #3: Concurrent first-burst không bị lọt qua, tokens trừ chuẩn xác."""
+    import psycopg
+    key = f"burst-test-{uuid.uuid4().hex}"
+
+    def hit():
+        with psycopg.connect(multi_lab.db_url, autocommit=True) as conn:
+            cur = conn.execute("SELECT take_rate_limit(%s, 60, 3)", (key,))
+            return cur.fetchone()[0]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(hit) for _ in range(10)]
+        results = [f.result() for f in futures]
+
+    allowed = [r for r in results if r == 0.0]
+    blocked = [r for r in results if r > 0.0]
+    assert len(allowed) == 3, f"Allowed count should be 3, got: {len(allowed)}"
+    assert len(blocked) == 7, f"Blocked count should be 7, got: {len(blocked)}"
+
+
+def test_concurrent_signings_exceeding_pool_size_no_deadlock(multi_lab, cluster, pdf):
+    """Finding #1 & #6: N > pool_size lượt ký đồng thời trên các tài liệu khác nhau không gây deadlock/timeout pool."""
+    be_a = cluster["a"]
+    api = cluster["api"]
+
+    # Tạo 12 tài liệu riêng biệt (pool_size mặc định là 10)
+    api_a = be_a.client(api_key=api.api_key)
+    docs = [create_document(api_a, pdf, [SIGNER_A]) for _ in range(12)]
+
+    code = "789123"
+
+    def sign_doc(doc):
+        client = be_a.client()
+        link = invite_path(doc, 0)
+        return sign(client, link, code)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        futures = [executor.submit(sign_doc, doc) for doc in docs]
+        results = [f.result() for f in futures]
+
+    assert all(status == 200 for status, _ in results)
+
+
+def test_relay_dispatch_pending_after_listener_reconnect(multi_lab, cluster):
+    """Finding #4: Request được commit trong lúc listener đích chưa sẵn sàng sẽ được dispatch ngay sau khi reconnect."""
+    import psycopg, secrets
+    be_a = cluster["a"]
+
+    # Tra cứu session của agent "789123" trên Instance A
+    with psycopg.connect(multi_lab.db_url, autocommit=True) as conn:
+        cur = conn.execute("SELECT id, instance_id FROM agent_sessions WHERE code = '789123'")
+        row = cur.fetchone()
+        assert row is not None
+        sess_id, inst_id = row[0], row[1]
+
+        # Thêm 1 request pending giả định đến lúc kết nối LISTEN bị gián đoạn (không có NOTIFY)
+        req_id = secrets.token_hex(8)
+        conn.execute(
+            "INSERT INTO agent_relay_requests (id, session_id, target_instance, kind, payload, expires_at) "
+            "VALUES (%s, %s, %s, 'list_certificates', '{}'::jsonb, now() + interval '60 seconds')",
+            (req_id, sess_id, inst_id),
+        )
+
+        # Kích hoạt quét pending bằng việc gọi 1 request bình thường qua Instance A
+        wait_until(
+            lambda: conn.execute("SELECT status FROM agent_relay_requests WHERE id = %s", (req_id,)).fetchone()[0] in ("claimed", "completed"),
+            "request pending được claim và dispatch",
+            timeout=10.0,
+        )
+
+
+def test_relay_killed_instance_fails_fast_not_180s(multi_lab, cluster):
+    """Finding #5: Khi instance chủ chứa WebSocket của agent bị tắt/chết, request từ instance khác fail nhanh (không chờ 180s)."""
+    import time
+    be_b = cluster["b"]
+
+    # Tạo một instance C và agent nối vào C
+    be_c = multi_lab.start_backend("be-multi-c")
+    code_c = "555123"
+    env_c = make_softhsm_token(multi_lab, "signer-a.pfx", "TOKEN-C")
+    agent_c = multi_lab.start_agent(
+        code_c,
+        "--pkcs11",
+        softhsm_module(),
+        "--token-label",
+        "TOKEN-C",
+        "--pin",
+        "123456",
+        backend=be_c,
+        env=env_c,
+    )
+
+    # Xác nhận Instance B thấy agent trên Instance C
+    status, _ = be_b.client().get(f"/api/agents/{code_c}/certificates")
+    assert status == 200
+
+    # Giết instance C (mô phỏng crash)
+    be_c.process.stop()
+    agent_c.stop()
+
+    # Xoá hoặc ép hết hạn lease trong DB để mô phỏng thời gian lease trôi qua
+    multi_lab.sql("UPDATE agent_sessions SET expires_at = now() - interval '1 second' WHERE code = %s", (code_c,))
+
+    # Gửi request từ Instance B tới agent của C
+    start = time.monotonic()
+    status, body = be_b.client().get(f"/api/agents/{code_c}/certificates")
+    elapsed = time.monotonic() - start
+
+    assert status in (404, 502)
+    assert elapsed < 5.0, f"Request took {elapsed}s, should fail fast"

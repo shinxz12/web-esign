@@ -105,8 +105,7 @@ BEGIN
     ALTER TABLE revisions DROP CONSTRAINT IF EXISTS revisions_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'revisions_org_document_fkey') THEN
         ALTER TABLE revisions ADD CONSTRAINT revisions_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
-        ALTER TABLE revisions VALIDATE CONSTRAINT revisions_org_document_fkey;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
     END IF;
 END
 $$;
@@ -122,8 +121,7 @@ BEGIN
     ALTER TABLE recipients DROP CONSTRAINT IF EXISTS recipients_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipients_org_document_fkey') THEN
         ALTER TABLE recipients ADD CONSTRAINT recipients_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
-        ALTER TABLE recipients VALIDATE CONSTRAINT recipients_org_document_fkey;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipients_org_id_id_key') THEN
         ALTER TABLE recipients ADD CONSTRAINT recipients_org_id_id_key UNIQUE (org_id, id);
@@ -142,8 +140,7 @@ BEGIN
     ALTER TABLE recipient_logos DROP CONSTRAINT IF EXISTS recipient_logos_recipient_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipient_logos_org_recipient_fkey') THEN
         ALTER TABLE recipient_logos ADD CONSTRAINT recipient_logos_org_recipient_fkey
-            FOREIGN KEY (org_id, recipient_id) REFERENCES recipients (org_id, id) ON DELETE CASCADE NOT VALID;
-        ALTER TABLE recipient_logos VALIDATE CONSTRAINT recipient_logos_org_recipient_fkey;
+            FOREIGN KEY (org_id, recipient_id) REFERENCES recipients (org_id, id) ON DELETE CASCADE;
     END IF;
 END
 $$;
@@ -159,8 +156,7 @@ BEGIN
     ALTER TABLE events DROP CONSTRAINT IF EXISTS events_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'events_org_document_fkey') THEN
         ALTER TABLE events ADD CONSTRAINT events_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
-        ALTER TABLE events VALIDATE CONSTRAINT events_org_document_fkey;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
     END IF;
 END
 $$;
@@ -191,8 +187,7 @@ BEGIN
     ALTER TABLE webhook_deliveries DROP CONSTRAINT IF EXISTS webhook_deliveries_endpoint_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'webhook_deliveries_org_endpoint_fkey') THEN
         ALTER TABLE webhook_deliveries ADD CONSTRAINT webhook_deliveries_org_endpoint_fkey
-            FOREIGN KEY (org_id, endpoint_id) REFERENCES webhook_endpoints (org_id, id) ON DELETE CASCADE NOT VALID;
-        ALTER TABLE webhook_deliveries VALIDATE CONSTRAINT webhook_deliveries_org_endpoint_fkey;
+            FOREIGN KEY (org_id, endpoint_id) REFERENCES webhook_endpoints (org_id, id) ON DELETE CASCADE;
     END IF;
 END
 $$;

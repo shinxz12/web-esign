@@ -619,6 +619,8 @@ Hệ thống hoạt động theo chuẩn nền tảng SaaS dùng chung (SPEC §1
   ```
 - Người dùng (`users`) là danh tính độc lập (email duy nhất toàn hệ thống). Một tài khoản có thể tham gia nhiều tổ chức qua bảng `memberships(user_id, org_id, role)`. Phiên làm việc (`sessions`) lưu tổ chức đang kích hoạt và có thể chuyển đổi qua endpoint `POST /api/auth/switch-org`.
 
+> **Lưu ý vận hành migration 003:** Tệp migration `003_saas_tenancy.sql` thực hiện chuẩn hoá schema đa tổ chức (thêm cột `org_id`, ràng buộc khoá ngoại kép và kích hoạt RLS) trong một transaction duy nhất, do đó PostgreSQL sẽ giữ table lock trên các bảng chính trong suốt thời gian chạy migration. Vì tập dữ liệu hiện tại của hệ thống ở quy mô nhỏ (chưa tới ngưỡng hàng triệu bản ghi), thiết kế lựa chọn thực thi trực tiếp thay vì chia nhỏ nhiều giai đoạn staging phức tạp; khuyến nghị chạy migration trong khung giờ thấp điểm (low-traffic window) để tránh ảnh hưởng tới các phiên làm việc đang diễn ra.
+
 ### 2. Quản trị đối tác (Partner API - SPEC §1-2)
 
 - Khoá đối tác: tiền tố `wsp_live_…` (chỉ hiển thị một lần khi tạo).
@@ -642,10 +644,10 @@ Hệ thống hoạt động theo chuẩn nền tảng SaaS dùng chung (SPEC §1
 
 ### 4. Biến môi trường mới
 
-- `WEBSIGNER_KEK`: Khóa mã hoá KEK 32 bytes (chuỗi base64) dùng mã hoá AES-256-GCM các bí mật lưu trữ (secret webhook ngẫu nhiên `whsec_…`, khoá liên kết ký riêng của từng tổ chức). **Bắt buộc** khi `WEBSIGNER_PUBLIC_URL` sử dụng HTTPS (môi trường production); nếu thiếu hoặc sai định dạng sẽ dừng ngay khi khởi động. Chỉ trong môi trường dev/test cục bộ mới cho phép fallback sang khoá dẫn xuất (gắn định danh riêng `dev-fallback`).
+- `WEBSIGNER_KEK`: Khóa mã hoá KEK 32 bytes (chuỗi base64) dùng mã hoá AES-256-GCM các bí mật lưu trữ (secret webhook ngẫu nhiên `whsec_…`, khoá liên kết ký riêng của từng tổ chức). Bắt buộc phải có giá trị hợp lệ khi chạy production; nếu thiếu hoặc không giải mã đúng 32 bytes thì máy chủ sẽ từ chối khởi động.
 - `WEBSIGNER_KEK_ID`: Định danh của khoá KEK đang hoạt động (mặc định: `k1`).
 - `WEBSIGNER_OLD_KEKS`: Danh sách các khoá KEK cũ khi xoay vòng, phân tách bằng dấu phẩy (dạng `kid1:base64...,kid2:base64...`).
-
+- `WEBSIGNER_DEV_MODE`: Cờ cho phép chế độ phát triển/kiểm thử cục bộ (`1` hoặc `true`). Chỉ khi cờ này được bật rõ ràng thì hệ thống mới cho phép sinh KEK dẫn xuất tạm thời từ `WEBSIGNER_SECRET_KEY` (và luôn gán định danh cố định `dev-fallback` để phân biệt với khoá thật).
 ### 5. Lệnh CLI quản trị bổ sung
 
 ```bash

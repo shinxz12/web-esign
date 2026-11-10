@@ -26,15 +26,12 @@ DEV_KEK_ID = "dev-fallback"
 
 
 def is_dev_mode() -> bool:
-    """Kiểm tra xem hệ thống có đang ở chế độ dev/test được phép dùng KEK dẫn xuất không."""
+    """Kiểm tra cờ bật chế độ dev/test rõ ràng qua biến môi trường."""
+    if os.environ.get("WEBSIGNER_DEV_MODE", "").lower() in ("1", "true", "yes"):
+        return True
     if os.environ.get("WEBSIGNER_ALLOW_DEV_KEK", "").lower() in ("1", "true", "yes"):
         return True
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        return True
-    if config.WEBHOOK_ALLOW_PRIVATE:
-        return True
-    pub = config.public_url()
-    if not pub or not pub.lower().startswith("https://"):
         return True
     return False
 
@@ -43,9 +40,9 @@ def current_kek_id() -> str:
     if os.environ.get("WEBSIGNER_KEK"):
         return os.environ.get("WEBSIGNER_KEK_ID", DEFAULT_KEK_ID)
     if is_dev_mode():
-        return os.environ.get("WEBSIGNER_KEK_ID", DEV_KEK_ID)
+        # Luôn luôn áp dụng định danh dev-fallback riêng biệt khi dùng khoá dẫn xuất
+        return DEV_KEK_ID
     return os.environ.get("WEBSIGNER_KEK_ID", DEFAULT_KEK_ID)
-
 
 def validate_kek() -> None:
     """Kiểm tra cấu hình KEK khi khởi động máy chủ (gọi trong lifespan).
@@ -106,10 +103,9 @@ def get_kek(kek_id: str | None = None) -> bytes:
                     pass
 
     # 3. Fallback cho dev/test với ID riêng biệt dev-fallback
-    if is_dev_mode():
-        if target_kid == DEV_KEK_ID or (env_kek is None and target_kid == cur_kid):
-            seed = b"WEBSIGNER_KEK:" + target_kid.encode() + b":" + config.secret_key()
-            return hashlib.sha256(seed).digest()
+    if is_dev_mode() and target_kid == DEV_KEK_ID:
+        seed = b"WEBSIGNER_KEK:" + DEV_KEK_ID.encode() + b":" + config.secret_key()
+        return hashlib.sha256(seed).digest()
 
     raise RuntimeError(f"Không tìm thấy KEK hợp lệ cho kek_id='{target_kid}'")
 

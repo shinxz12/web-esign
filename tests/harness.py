@@ -395,6 +395,7 @@ class Lab:
             "WEBSIGNER_DATABASE_URL": self.db_url,
             "WEBSIGNER_SECRET_KEY": "e2e-" + "k" * 40,
             "WEBSIGNER_WEBHOOK_ALLOW_PRIVATE": "1",
+            "WEBSIGNER_DEV_MODE": "1",
             "WEBSIGNER_SMTP_URL": f"smtp://127.0.0.1:{self.smtp.port}",
             # Agent in "Đã kết nối" ra log — phải thấy ngay, không chờ đầy bộ đệm.
             "PYTHONUNBUFFERED": "1",

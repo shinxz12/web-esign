@@ -54,6 +54,31 @@ class AgentSession:
     id: str = field(default_factory=lambda: secrets.token_hex(8))
     pending: dict[str, asyncio.Future] = field(default_factory=dict)
     certificates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _heartbeat_task: asyncio.Task | None = field(default=None, repr=False)
+
+    def start_heartbeat(self) -> None:
+        self.stop_heartbeat()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name=f"heartbeat-{self.id}")
+
+    def stop_heartbeat(self) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(5.0)
+                if db.is_pool_open():
+                    await db.system_execute(
+                        "UPDATE agent_sessions SET last_seen = now(), expires_at = now() + interval '20 seconds' "
+                        "WHERE id = %s",
+                        (self.id,),
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Heartbeat lỗi cho session %s: %s", self.id, exc)
 
     async def call(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self.websocket is not None:
@@ -136,7 +161,7 @@ class AgentHub:
                 (session.code, session.device_id),
             )
 
-            expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=20)
             await db.system_execute(
                 "INSERT INTO agent_sessions (id, code, device_id, name, platform, instance_id, certificates, expires_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
@@ -160,24 +185,32 @@ class AgentHub:
             if prev is not None and prev is not session:
                 self._drop(prev)
             self._local_by_device[session.device_id] = session
+        session.start_heartbeat()
 
     async def unregister(self, session: AgentSession) -> None:
+        session.stop_heartbeat()
         self._local_sessions.pop(session.id, None)
         if self._local_by_code.get(session.code) is session:
             self._local_by_code.pop(session.code, None)
         if session.device_id and self._local_by_device.get(session.device_id) is session:
             self._local_by_device.pop(session.device_id, None)
 
+        # Xoá các forwarded requests thuộc về session này (Finding #12)
+        to_delete = [req_id for req_id, sid in self._forwarded_requests.items() if sid == session.id]
+        for req_id in to_delete:
+            self._forwarded_requests.pop(req_id, None)
+
         if db.is_pool_open():
             await db.system_execute("DELETE FROM agent_sessions WHERE id = %s", (session.id,))
             await db.system_execute(
                 "UPDATE agent_relay_requests SET status = 'error', error = 'Agent đã ngắt kết nối' "
-                "WHERE session_id = %s AND status = 'pending'",
+                "WHERE session_id = %s AND status IN ('pending', 'claimed')",
                 (session.id,),
             )
         self._drop(session)
 
     def _drop(self, session: AgentSession) -> None:
+        session.stop_heartbeat()
         for future in list(session.pending.values()):
             if not future.done():
                 future.set_exception(AgentError("Agent đã ngắt kết nối"))
@@ -297,7 +330,15 @@ class AgentHub:
                 except asyncio.TimeoutError:
                     if future.done():
                         return future.result()
-                    # Fallback poll phòng trường hợp NOTIFY bị lỡ
+                    # 1. Kiểm tra session/instance chủ có còn sống không qua heartbeat lease (Finding #5)
+                    sess_row = await db.system_fetchone(
+                        "SELECT expires_at FROM agent_sessions WHERE id = %s",
+                        (session.id,),
+                    )
+                    if sess_row is None or sess_row["expires_at"] < datetime.now(timezone.utc):
+                        raise AgentError("Agent đã ngắt kết nối")
+
+                    # 2. Fallback poll phòng trường hợp NOTIFY bị lỡ
                     row = await db.system_fetchone(
                         "SELECT status, response, error FROM agent_relay_requests WHERE id = %s",
                         (request_id,),
@@ -345,9 +386,12 @@ class AgentHub:
                     row_factory=dict_row,
                 )
                 await conn.execute("LISTEN agent_requests; LISTEN agent_responses; LISTEN agent_control;")
+                # Finding #4: Sau khi LISTEN, lập tức dispatch mọi request còn pending
+                await self._dispatch_pending()
                 while self._listener_stop is not None and not self._listener_stop.is_set():
                     async for notify in conn.notifies(timeout=1.0):
                         await self._on_notify(notify.channel, notify.payload)
+                    await self._dispatch_pending()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -363,33 +407,15 @@ class AgentHub:
         if channel == "agent_requests":
             request_id = payload
             row = await db.system_fetchone(
-                "SELECT * FROM agent_relay_requests WHERE id = %s AND target_instance = %s AND status = 'pending'",
+                "UPDATE agent_relay_requests SET status = 'claimed' "
+                "WHERE id = %s AND target_instance = %s AND status = 'pending' AND expires_at > now() "
+                "RETURNING *",
                 (request_id, self.instance_id),
             )
             if not row:
                 return
+            await self._forward_request(row)
 
-            local_sess = self._local_sessions.get(row["session_id"])
-            if local_sess is None or local_sess.websocket is None:
-                await db.system_execute(
-                    "UPDATE agent_relay_requests SET status = 'error', error = %s WHERE id = %s",
-                    ("Agent đã ngắt kết nối", request_id),
-                )
-                await db.system_execute("SELECT pg_notify('agent_responses', %s)", (request_id,))
-                return
-
-            self._forwarded_requests[request_id] = local_sess.id
-            try:
-                await local_sess.websocket.send_json(
-                    {"id": request_id, "type": row["kind"], **row["payload"]}
-                )
-            except Exception as exc:
-                self._forwarded_requests.pop(request_id, None)
-                await db.system_execute(
-                    "UPDATE agent_relay_requests SET status = 'error', error = %s WHERE id = %s",
-                    (f"Lỗi gửi tới agent: {exc}", request_id),
-                )
-                await db.system_execute("SELECT pg_notify('agent_responses', %s)", (request_id,))
 
         elif channel == "agent_responses":
             request_id = payload
@@ -411,5 +437,42 @@ class AgentHub:
             if local_sess:
                 self._drop(local_sess)
 
+
+    async def _dispatch_pending(self) -> None:
+        """Quét và dispatch mọi request còn pending cho instance này khi khởi động hoặc reconnect (Finding #4)."""
+        if not db.is_pool_open():
+            return
+        rows = await db.system_fetchall(
+            "UPDATE agent_relay_requests SET status = 'claimed' "
+            "WHERE target_instance = %s AND status = 'pending' AND expires_at > now() "
+            "RETURNING *",
+            (self.instance_id,),
+        )
+        for row in rows:
+            await self._forward_request(row)
+
+    async def _forward_request(self, row: dict[str, Any]) -> None:
+        request_id = row["id"]
+        local_sess = self._local_sessions.get(row["session_id"])
+        if local_sess is None or local_sess.websocket is None:
+            await db.system_execute(
+                "UPDATE agent_relay_requests SET status = 'error', error = %s WHERE id = %s",
+                ("Agent đã ngắt kết nối", request_id),
+            )
+            await db.system_execute("SELECT pg_notify('agent_responses', %s)", (request_id,))
+            return
+
+        self._forwarded_requests[request_id] = local_sess.id
+        try:
+            await local_sess.websocket.send_json(
+                {"id": request_id, "type": row["kind"], **row["payload"]}
+            )
+        except Exception as exc:
+            self._forwarded_requests.pop(request_id, None)
+            await db.system_execute(
+                "UPDATE agent_relay_requests SET status = 'error', error = %s WHERE id = %s",
+                (f"Lỗi gửi tới agent: {exc}", request_id),
+            )
+            await db.system_execute("SELECT pg_notify('agent_responses', %s)", (request_id,))
 
 hub = AgentHub()

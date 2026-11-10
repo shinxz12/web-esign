@@ -15,11 +15,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import contextlib
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+
+from fastapi import status
+import psycopg
+from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from . import db, documents, handwriting, signing, storage
+from . import config, db, documents, handwriting, signing, storage
 from .errors import ApiError, bad_request, conflict
 from .relay import AgentError, AgentSession
 
@@ -64,29 +69,38 @@ def _require_method(recipient: dict, method: str) -> None:
 
 @asynccontextmanager
 async def _acquire(doc_id: str) -> AsyncIterator[None]:
-    """Khóa ký phân tán theo tài liệu dùng PostgreSQL advisory lock.
+    """Khóa ký phân tán theo tài liệu dùng PostgreSQL advisory lock trên kết nối riêng biệt.
 
-    Giữ khoá trên một kết nối chuyên biệt suốt prepare -> token -> finalize -> ghi.
-    Người ký song song nhận ngay 409 signing_in_progress thay vì treo chờ PIN.
+    Kết nối độc lập (không chiếm slot của connection pool chính), đảm bảo:
+    - Khi có N > pool_size lượt ký đồng thời trên các tài liệu khác nhau, pool không bị cạn kiệt.
+    - Đóng kết nối khi hoàn tất (hoặc khi xảy ra lỗi/ngắt tiến trình) bảo đảm Postgres
+      tự động giải phóng session lock ngay lập tức mà không bao giờ để sót lock trong pool.
     """
-    async with db.system_connection() as conn:
+    conn = await psycopg.AsyncConnection.connect(
+        config.DATABASE_URL,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
         cur = await conn.execute(
             "SELECT pg_try_advisory_lock(hashtext('doc_lock'), hashtext(%s)) AS ok",
             (doc_id,),
         )
         row = await cur.fetchone()
         if not row or not row["ok"]:
+            await conn.close()
             raise conflict("signing_in_progress", "Một người khác đang ký tài liệu này, thử lại sau ít phút")
         try:
             yield
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await conn.execute(
                     "SELECT pg_advisory_unlock(hashtext('doc_lock'), hashtext(%s))",
                     (doc_id,),
                 )
-            except Exception:
-                pass
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.close()
 
 
 class HandwriteRequest(BaseModel):
