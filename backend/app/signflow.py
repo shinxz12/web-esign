@@ -109,7 +109,7 @@ async def handwrite(
         doc, recipient, recipients = await documents.by_token(token)
         documents.require_turn(doc, recipient, recipients, "signer")
         revision = doc["revision"]
-        pdf = await asyncio.to_thread(storage.read_revision, doc["id"], revision)
+        pdf = await asyncio.to_thread(storage.read_revision, doc["org_id"], doc["id"], revision)
         signed_pdf, field_name = await asyncio.to_thread(
             handwriting.stamp, pdf, page, box, image, recipient["name"]
         )
@@ -170,7 +170,7 @@ async def sign(
         doc, recipient, recipients = await documents.by_token(token)
         documents.require_turn(doc, recipient, recipients, "signer")
         revision = doc["revision"]
-        pdf = await asyncio.to_thread(storage.read_revision, doc["id"], revision)
+        pdf = await asyncio.to_thread(storage.read_revision, doc["org_id"], doc["id"], revision)
 
         logo = await documents.load_logo(recipient["id"]) if request.use_logo else None
         profile = signing.default_profile()

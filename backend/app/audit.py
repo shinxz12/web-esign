@@ -38,7 +38,9 @@ async def append(
     Khoá dòng tài liệu trước khi đọc mắt xích cuối: hai sự kiện song song của
     cùng tài liệu xếp hàng, không bao giờ cùng nối vào một mắt xích.
     """
-    await conn.execute("SELECT 1 FROM documents WHERE id = %s FOR UPDATE", (document_id,))
+    cur_doc = await conn.execute("SELECT org_id FROM documents WHERE id = %s FOR UPDATE", (document_id,))
+    doc_row = await cur_doc.fetchone()
+    org_id = doc_row["org_id"] if doc_row else (db.current_tenant_id() or "")
     cur = await conn.execute(
         "SELECT seq, hash FROM events WHERE document_id = %s ORDER BY seq DESC LIMIT 1",
         (document_id,),
@@ -60,9 +62,9 @@ async def append(
         }
     )
     await conn.execute(
-        "INSERT INTO events (document_id, seq, type, created_at, canonical, prev_hash, hash) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (document_id, seq, type_, at, canonical, prev_hash, chain_hash(prev_hash, canonical)),
+        "INSERT INTO events (org_id, document_id, seq, type, created_at, canonical, prev_hash, hash) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (org_id, document_id, seq, type_, at, canonical, prev_hash, chain_hash(prev_hash, canonical)),
     )
 
 

@@ -65,7 +65,7 @@ async def send_due(limit: int = 20) -> int:
     """Gửi các email tới hạn. Nhiều tiến trình chạy cùng lúc cũng không gửi trùng."""
     if not enabled():
         return 0
-    async with db.transaction() as conn:
+    async with db.system_transaction() as conn:
         cur = await conn.execute(
             "SELECT id, to_addr, subject, body, attempts FROM emails "
             "WHERE status = 'pending' AND next_attempt_at <= now() "
@@ -89,7 +89,7 @@ async def send_due(limit: int = 20) -> int:
             attempts = row["attempts"] + 1
             give_up = attempts > len(RETRY_DELAYS)
             logger.warning("Gửi email #%s thất bại (%s): %s", row["id"], attempts, exc)
-            await db.execute(
+            await db.system_execute(
                 "UPDATE emails SET attempts = %s, last_error = %s, status = %s, "
                 "next_attempt_at = now() + make_interval(secs => %s) WHERE id = %s",
                 (
@@ -101,7 +101,7 @@ async def send_due(limit: int = 20) -> int:
                 ),
             )
         else:
-            await db.execute(
+            await db.system_execute(
                 "UPDATE emails SET status = 'sent', sent_at = now(), "
                 "attempts = attempts + 1 WHERE id = %s",
                 (row["id"],),

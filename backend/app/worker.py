@@ -19,14 +19,14 @@ HOUSEKEEPING_SECONDS = 300.0
 
 
 async def _housekeeping() -> None:
-    await db.execute("DELETE FROM sessions WHERE expires_at < now()")
-    await db.execute("DELETE FROM user_tokens WHERE expires_at < now()")
-    await db.execute("DELETE FROM idempotency_keys WHERE created_at < now() - interval '24 hours'")
+    await db.system_execute("DELETE FROM sessions WHERE expires_at < now()")
+    await db.system_execute("DELETE FROM user_tokens WHERE expires_at < now()")
+    await db.system_execute("DELETE FROM idempotency_keys WHERE created_at < now() - interval '24 hours'")
     # Lịch sử gửi webhook giữ 30 ngày là đủ để tra soát.
-    await db.execute(
+    await db.system_execute(
         "DELETE FROM webhook_deliveries WHERE status <> 'pending' AND created_at < now() - interval '30 days'"
     )
-    await db.execute("DELETE FROM emails WHERE status = 'sent' AND created_at < now() - interval '30 days'")
+    await db.system_execute("DELETE FROM emails WHERE status = 'sent' AND created_at < now() - interval '30 days'")
     security.limiter.prune()
 
 

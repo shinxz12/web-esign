@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
-from . import accounts, mailer, plans, security, signing, trust, webhooks
+from . import accounts, db, mailer, plans, security, signing, trust, webhooks
 from .auth import SESSION_COOKIE, Principal, client_ip, dashboard_user, org_admin, user_agent
 from .config import ALLOW_SIGNUP, SESSION_TTL_DAYS
 from .errors import ApiError
@@ -50,6 +50,8 @@ class AcceptInvite(BaseModel):
     token: str = Field(min_length=10, max_length=200)
     name: str = Field(min_length=1, max_length=200)
     password: str = Field(max_length=256)
+class SwitchOrgRequest(BaseModel):
+    org_id: str = Field(min_length=1, max_length=100)
 
 
 class OrgUpdate(BaseModel):
@@ -121,7 +123,9 @@ def _me(who: Principal | None = None, *, user: dict | None = None, org: dict | N
 
 
 async def _start_session(request: Request, response: Response, user: dict) -> dict:
-    token, csrf = await accounts.create_session(user["id"], client_ip(request), user_agent(request))
+    org_id = user.get("org_id") or ""
+    db.set_tenant_id(org_id)
+    token, csrf = await accounts.create_session(user["id"], client_ip(request), user_agent(request), org_id=org_id)
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -165,6 +169,27 @@ async def logout(who: Principal = Depends(dashboard_user)) -> Response:
 @router.get("/auth/me", summary="Người dùng hiện tại, tổ chức và CSRF token")
 async def me(who: Principal = Depends(dashboard_user)) -> dict:
     return _me(who, csrf=who.csrf_token or "")
+
+@router.get("/auth/orgs", summary="Danh sách tổ chức của người dùng")
+async def my_orgs(who: Principal = Depends(dashboard_user)) -> list[dict]:
+    return await accounts.list_user_orgs(who.user["id"], who.org_id)  # type: ignore[index]
+
+
+@router.post("/auth/switch-org", summary="Chuyển tổ chức đang hoạt động")
+async def switch_org(body: SwitchOrgRequest, who: Principal = Depends(dashboard_user)) -> dict:
+    await accounts.switch_org(who.user["id"], who.session_token or "", body.org_id)  # type: ignore[index]
+    ctx = await accounts.session_context(who.session_token or "")
+    if ctx is None:
+        raise ApiError(500, "session_error", "Không thể tải phiên sau khi chuyển")
+    user = {k: ctx[k] for k in ("id", "email", "name", "role", "password_hash", "created_at")}
+    org = {
+        "id": ctx["org_id"],
+        "name": ctx["org_name"],
+        "plan": ctx["org_plan"],
+        "created_at": ctx["org_created_at"],
+        "embed_origins": ctx["org_embed_origins"],
+    }
+    return _me(user=user, org=org, csrf=who.csrf_token or "")
 
 
 @router.post("/auth/password", status_code=204, summary="Đổi mật khẩu (đăng xuất mọi phiên khác)")

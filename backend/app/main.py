@@ -30,6 +30,7 @@ from . import (
     api_account,
     api_agents,
     api_documents,
+    api_partner,
     api_recipient,
     config,
     db,
@@ -98,38 +99,79 @@ app.add_middleware(BodyLimit, max_bytes=config.MAX_UPLOAD_MB_HARD * 1024 * 1024)
 app.add_middleware(SecurityHeaders)
 
 
+STATUS_TITLES: dict[int, str] = {
+    400: "Bad Request",
+    401: "Unauthorized",
+    402: "Payment Required",
+    403: "Forbidden",
+    404: "Not Found",
+    409: "Conflict",
+    422: "Unprocessable Entity",
+    429: "Too Many Requests",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+}
+
+
 @app.exception_handler(ApiError)
 async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
+    content = {
+        "type": "about:blank",
+        "title": STATUS_TITLES.get(exc.status, "Error"),
+        "status": exc.status,
+        "detail": exc.message,
+        "code": exc.code,
+    }
     return JSONResponse(
-        {"detail": exc.message, "code": exc.code}, status_code=exc.status, headers=exc.headers
+        content,
+        status_code=exc.status,
+        headers=exc.headers,
+        media_type="application/problem+json",
     )
 
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    content = {
+        "type": "about:blank",
+        "title": STATUS_TITLES.get(exc.status_code, "Error"),
+        "status": exc.status_code,
+        "detail": str(exc.detail),
+        "code": f"http_{exc.status_code}",
+    }
     return JSONResponse(
-        {"detail": exc.detail, "code": f"http_{exc.status_code}"},
+        content,
         status_code=exc.status_code,
         headers=getattr(exc, "headers", None),
+        media_type="application/problem+json",
     )
 
 
 @app.exception_handler(RequestValidationError)
 async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    content = {
+        "type": "about:blank",
+        "title": "Unprocessable Entity",
+        "status": 422,
+        "detail": jsonable_encoder(exc.errors()),
+        "code": "validation_error",
+    }
     return JSONResponse(
-        {"detail": jsonable_encoder(exc.errors()), "code": "validation_error"}, status_code=422
+        content,
+        status_code=422,
+        media_type="application/problem+json",
     )
 
 
+app.include_router(api_partner.router)
 app.include_router(api_documents.router)
 app.include_router(api_account.router)
 app.include_router(api_recipient.router)
 app.include_router(api_agents.router)
 
-
 @app.get("/healthz", include_in_schema=False)
 async def healthz() -> dict:
-    await db.fetchone("SELECT 1")
+    await db.system_fetchone("SELECT 1")
     return {"ok": True}
 
 

@@ -600,3 +600,65 @@ trong bộ nhớ (xem phần Giới hạn). Hàng đợi webhook/email và mọi
 - Agent hiển thị tên tài liệu và hash để người ký xác nhận, nhưng không tự dựng
   lại được bản băm từ PDF — tức là không có WYSIWYS đầy đủ. Đây là đánh đổi cố
   hữu của hash-then-sign.
+
+## Đa tổ chức SaaS (Multi-Tenancy) & Partner API
+
+Hệ thống hoạt động theo chuẩn nền tảng SaaS dùng chung (SPEC §1-3, §5, §8):
+
+### 1. Cách ly dữ liệu bằng PostgreSQL RLS (SPEC §3)
+
+- Mọi bảng dữ liệu tenant đều có cột `org_id text NOT NULL` (kể cả các bảng con `recipients`, `revisions`, `events`, `webhook_deliveries`).
+- Khoá ngoại giữa các bảng con là khoá kép (composite FK: `FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id)`), ngăn chặn việc tham chiếu chéo giữa các tổ chức ở tầng cơ sở dữ liệu.
+- Toàn bộ truy vấn nghiệp vụ chạy dưới vai trò `websigner_tenant` (cấu hình `NOLOGIN NOBYPASSRLS`) và thiết lập `app.tenant_id`:
+  ```sql
+  SET LOCAL ROLE websigner_tenant;
+  SELECT set_config('app.tenant_id', '<org_id>', true);
+  ```
+- Người dùng (`users`) là danh tính độc lập (email duy nhất toàn hệ thống). Một tài khoản có thể tham gia nhiều tổ chức qua bảng `memberships(user_id, org_id, role)`. Phiên làm việc (`sessions`) lưu tổ chức đang kích hoạt và có thể chuyển đổi qua endpoint `POST /api/auth/switch-org`.
+
+### 2. Quản trị đối tác (Partner API - SPEC §1-2)
+
+- Khoá đối tác: tiền tố `wsp_live_…` (chỉ hiển thị một lần khi tạo).
+- Gọi API quản trị tenant con:
+  - `POST /v1/partner/tenants`: Tạo tenant (hỗ trợ `external_id` idempotent).
+  - `GET /v1/partner/tenants?external_id=&cursor=`: Liệt kê tenant.
+  - `GET / PATCH /v1/partner/tenants/{id}`: Xem và sửa thông tin tenant (`name`, `plan`, `settings`).
+  - `POST / DELETE /v1/partner/tenants/{id}/api-keys`: Cấp hoặc thu hồi khoá API `wsk_live_…` cho tenant con.
+  - `POST / GET / DELETE /v1/partner/tenants/{id}/webhooks`: Quản lý webhook endpoint của tenant con.
+  - `POST /v1/partner/tenants/{id}/webhooks/{endpoint_id}/rotate-secret`: Đổi secret webhook.
+- **Uỷ quyền (On-Behalf-Of):** Đối tác có thể thao tác trực tiếp trên API tài liệu `/v1/*` thay mặt cho tenant con bằng cách thêm header `On-Behalf-Of: <tenant_id>`. Nếu tenant không tồn tại hoặc không thuộc đối tác đó, hệ thống trả về `404 Not Found` (không để lộ sự tồn tại).
+
+### 3. Chuẩn Webhooks (Standard Webhooks - SPEC §8)
+
+- Các header chuẩn:
+  - `webhook-id`: ID sự kiện (cố định qua các lần thử lại).
+  - `webhook-timestamp`: Thời gian gửi (Unix timestamp dạng giây).
+  - `webhook-signature`: Chữ ký HMAC-SHA256 theo chuẩn Standard Webhooks: `v1,<base64>`. Khi xoay vòng secret, cả hai chữ ký cũ và mới được gửi cách nhau bằng dấu cách.
+- Header cũ `WebSigner-Signature: t=,v1=` vẫn được gửi kèm để đảm bảo tương thích ngược cho các hệ thống cũ.
+- Thân payload luôn có trường `tenant_id`: `{"id": "...", "type": "...", "created_at": "...", "tenant_id": "<org_id>", "data": {...}}`.
+
+### 4. Biến môi trường mới
+
+- `WEBSIGNER_KEK`: Khóa mã hoá KEK 32 bytes (chuỗi base64) dùng mã hoá AES-256-GCM các bí mật lưu trữ (secret webhook ngẫu nhiên `whsec_…`, khoá liên kết ký riêng của từng tổ chức).
+- `WEBSIGNER_KEK_ID`: Định danh của khoá KEK đang hoạt động (mặc định: `k1`).
+- `WEBSIGNER_OLD_KEKS`: Danh sách các khoá KEK cũ khi xoay vòng, phân tách bằng dấu phẩy (dạng `kid1:base64...,kid2:base64...`).
+
+### 5. Lệnh CLI quản trị bổ sung
+
+```bash
+# Tạo đối tác mới (in khoá wsp_live_... một lần)
+python -m app.admin create-partner "Đối tác ERP"
+
+# Liệt kê đối tác
+python -m app.admin list-partners
+
+# Gắn một tổ chức sẵn có vào đối tác
+python -m app.admin attach-partner org_1234abcd prt_5678efgh
+
+# Rewrap lại các secret sang KEK mới nhất sau khi đổi WEBSIGNER_KEK
+python -m app.admin rewrap-secrets
+
+# Chuyển đổi tệp PDF sang cấu trúc lưu trữ mới t/<org_id>/documents/<doc_id>/rev<N>.pdf
+python -m app.admin migrate-storage --dry-run
+python -m app.admin migrate-storage
+```

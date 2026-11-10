@@ -1,12 +1,7 @@
-"""Webhook: báo cho hệ thống tích hợp biết tài liệu đổi trạng thái.
+"""Webhook gửi sự kiện tới hệ thống tích hợp theo mô hình transactional outbox.
 
-* Outbox: sự kiện được ghi vào ``webhook_deliveries`` **cùng transaction**
-  với thay đổi nghiệp vụ — không có chuyện tài liệu hoàn tất mà webhook mất.
-* Ký: header ``WebSigner-Signature: t=<unix>,v1=<hex>``, HMAC-SHA256 trên
-  ``"<t>." + body`` bằng secret riêng của endpoint (giống Stripe).
-* Chống SSRF: chỉ gọi HTTPS tới địa chỉ công cộng. Kiểm tra IP **lúc kết nối**
-  (resolver riêng), nên DNS rebinding cũng không lọt vào mạng nội bộ.
-* Thử lại giãn dần tới ~1 ngày rồi đánh dấu thất bại; gửi lại tay được.
+Hỗ trợ Standard Webhooks (SPEC §8) và tương thích ngược với header WebSigner-Signature.
+Bí mật webhook được tạo ngẫu nhiên dạng whsec_<base64> và mã hoá AES-256-GCM qua KEK (SPEC §5).
 """
 
 from __future__ import annotations
@@ -24,13 +19,13 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp.abc import ResolveResult
 from aiohttp.resolver import ThreadedResolver
-
-from . import config, db, plans, security
+from . import config, db, plans, secrets_crypto, security
 from .errors import ApiError, not_found
 
 logger = logging.getLogger("websigner.webhooks")
 
 EVENT_TYPES = (
+    "document.created",
     "document.sent",
     "document.completed",
     "document.declined",
@@ -43,7 +38,6 @@ EVENT_TYPES = (
 )
 TEST_EVENT = "webhook.test"
 
-# 10 giây, 1 phút, 5 phút, 30 phút, 2 giờ, 6 giờ, 12 giờ -> tổng ~21 giờ.
 RETRY_DELAYS = (10, 60, 300, 1800, 7200, 21600, 43200)
 TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
 
@@ -110,7 +104,7 @@ def _validate_events(events: list[str]) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def endpoint_view(row: dict, *, reveal_secret: bool = False) -> dict:
+def endpoint_view(row: dict, *, secret: str | None = None) -> dict:
     view = {
         "id": row["id"],
         "url": row["url"],
@@ -119,9 +113,15 @@ def endpoint_view(row: dict, *, reveal_secret: bool = False) -> dict:
         "enabled": row["enabled"],
         "created_at": row["created_at"].isoformat(),
     }
-    if reveal_secret:
-        view["secret"] = security.webhook_secret(row["id"], row["secret_version"])
+    if secret is not None:
+        view["secret"] = secret
     return view
+
+
+def _get_endpoint_secret(row: dict) -> str:
+    if row.get("secret_scheme") == "kek" and row.get("secret_ciphertext"):
+        return secrets_crypto.decrypt_secret(row["secret_ciphertext"], row["kek_id"])
+    return security.webhook_secret(row["id"], row["secret_version"])
 
 
 async def create_endpoint(
@@ -130,6 +130,10 @@ async def create_endpoint(
     plan = plans.get(org["plan"])
     url = validate_url(url)
     events = _validate_events(events)
+
+    raw_secret = secrets_crypto.new_webhook_secret()
+    ciphertext, kek_id = secrets_crypto.encrypt_secret(raw_secret)
+
     async with db.transaction() as conn:
         cur = await conn.execute(
             "SELECT count(*) AS n FROM webhook_endpoints WHERE org_id = %s", (org["id"],)
@@ -139,11 +143,12 @@ async def create_endpoint(
                 402, "quota_exceeded", f"Gói {plan.name} tối đa {plan.max_webhooks} webhook"
             )
         cur = await conn.execute(
-            "INSERT INTO webhook_endpoints (id, org_id, url, description, events) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING *",
-            (security.new_id("wh"), org["id"], url, description, events),
+            "INSERT INTO webhook_endpoints (id, org_id, url, description, events, secret_scheme, secret_ciphertext, kek_id) "
+            "VALUES (%s, %s, %s, %s, %s, 'kek', %s, %s) RETURNING *",
+            (security.new_id("wh"), org["id"], url, description, events, ciphertext, kek_id),
         )
-        return endpoint_view(await cur.fetchone(), reveal_secret=True)
+        row = await cur.fetchone()
+        return endpoint_view(row, secret=raw_secret)
 
 
 async def _endpoint(org_id: str, endpoint_id: str) -> dict:
@@ -156,7 +161,9 @@ async def _endpoint(org_id: str, endpoint_id: str) -> dict:
 
 
 async def get_endpoint(org_id: str, endpoint_id: str) -> dict:
-    return endpoint_view(await _endpoint(org_id, endpoint_id), reveal_secret=True)
+    row = await _endpoint(org_id, endpoint_id)
+    secret = _get_endpoint_secret(row)
+    return endpoint_view(row, secret=secret)
 
 
 async def list_endpoints(org_id: str) -> list[dict]:
@@ -181,12 +188,18 @@ async def update_endpoint(org_id: str, endpoint_id: str, changes: dict[str, Any]
 
 
 async def rotate_secret(org_id: str, endpoint_id: str) -> dict:
-    await _endpoint(org_id, endpoint_id)
-    row = await db.fetchone(
-        "UPDATE webhook_endpoints SET secret_version = secret_version + 1 WHERE id = %s RETURNING *",
-        (endpoint_id,),
+    row = await _endpoint(org_id, endpoint_id)
+    new_secret = secrets_crypto.new_webhook_secret()
+    ciphertext, kek_id = secrets_crypto.encrypt_secret(new_secret)
+
+    prev_ciphertext = row.get("secret_ciphertext")
+    row_updated = await db.fetchone(
+        "UPDATE webhook_endpoints SET secret_version = secret_version + 1, "
+        "prev_secret_ciphertext = %s, secret_ciphertext = %s, kek_id = %s, secret_scheme = 'kek' "
+        "WHERE id = %s RETURNING *",
+        (prev_ciphertext, ciphertext, kek_id, endpoint_id),
     )
-    return endpoint_view(row, reveal_secret=True)
+    return {"secret": new_secret}
 
 
 async def delete_endpoint(org_id: str, endpoint_id: str) -> None:
@@ -237,11 +250,11 @@ async def retry_delivery(org_id: str, endpoint_id: str, delivery_id: str) -> dic
 
 async def send_test(org: dict, endpoint_id: str) -> dict:
     endpoint = await _endpoint(org["id"], endpoint_id)
-    event = _event(TEST_EVENT, {"organization": {"id": org["id"], "name": org["name"]}})
+    event = _event(TEST_EVENT, org["id"], {"organization": {"id": org["id"], "name": org["name"]}})
     row = await db.fetchone(
-        "INSERT INTO webhook_deliveries (id, endpoint_id, event_id, event_type, payload) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING *",
-        (security.new_id("whd"), endpoint["id"], event["id"], TEST_EVENT, json.dumps(event)),
+        "INSERT INTO webhook_deliveries (id, org_id, endpoint_id, event_id, event_type, payload) "
+        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+        (security.new_id("whd"), org["id"], endpoint["id"], event["id"], TEST_EVENT, json.dumps(event)),
     )
     wake()
     return delivery_view(row)
@@ -267,11 +280,12 @@ async def wait_for_work(timeout: float) -> None:
     _wakeup.clear()
 
 
-def _event(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+def _event(event_type: str, org_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": security.new_id("evt"),
         "type": event_type,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "tenant_id": org_id,
         "data": data,
     }
 
@@ -286,13 +300,13 @@ async def enqueue(conn: db.Conn, org_id: str, event_type: str, data: dict[str, A
     endpoints = await cur.fetchall()
     if not endpoints:
         return
-    event = _event(event_type, data)
+    event = _event(event_type, org_id, data)
     payload = json.dumps(event, ensure_ascii=False)
     for endpoint in endpoints:
         await conn.execute(
-            "INSERT INTO webhook_deliveries (id, endpoint_id, event_id, event_type, payload) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (security.new_id("whd"), endpoint["id"], event["id"], event_type, payload),
+            "INSERT INTO webhook_deliveries (id, org_id, endpoint_id, event_id, event_type, payload) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (security.new_id("whd"), org_id, endpoint["id"], event["id"], event_type, payload),
         )
 
 
@@ -306,7 +320,6 @@ async def _post(session: aiohttp.ClientSession, row: dict) -> tuple[int | None, 
     url = row["url"]
     host = urlsplit(url).hostname or ""
     if not config.WEBHOOK_ALLOW_PRIVATE:
-        # IP ghi thẳng trong URL không đi qua resolver: phải tự chặn.
         try:
             literal = ipaddress.ip_address(host)
         except ValueError:
@@ -314,20 +327,46 @@ async def _post(session: aiohttp.ClientSession, row: dict) -> tuple[int | None, 
         if literal is not None and not _is_public(host):
             return None, "URL trỏ vào mạng nội bộ"
 
-    body = json.dumps(row["payload"], ensure_ascii=False, separators=(",", ":")).encode()
+    raw_payload = row["payload"]
+    if isinstance(raw_payload, str):
+        body_obj = json.loads(raw_payload)
+    else:
+        body_obj = raw_payload
+
+    body = json.dumps(body_obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     timestamp = int(time.time())
-    secret = security.webhook_secret(row["endpoint_id"], row["secret_version"])
+
+    # Lấy secret
+    secret = _get_endpoint_secret(row)
+    prev_secret: str | None = None
+    if row.get("prev_secret_ciphertext") and row.get("kek_id"):
+        try:
+            prev_secret = secrets_crypto.decrypt_secret(row["prev_secret_ciphertext"], row["kek_id"])
+        except Exception:
+            pass
+
+    sig_std = secrets_crypto.sign_standard_webhook(secret, row["event_id"], timestamp, body)
+    if prev_secret:
+        sig_prev = secrets_crypto.sign_standard_webhook(prev_secret, row["event_id"], timestamp, body)
+        signature_header = f"{sig_std} {sig_prev}"
+    else:
+        signature_header = sig_std
+
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "WebSigner-Webhooks/1.0",
+        "webhook-id": row["event_id"],
+        "webhook-timestamp": str(timestamp),
+        "webhook-signature": signature_header,
         "WebSigner-Event": row["event_type"],
         "WebSigner-Event-Id": row["event_id"],
         "WebSigner-Delivery": row["id"],
         "WebSigner-Signature": f"t={timestamp},v1={security.sign_webhook(secret, timestamp, body)}",
     }
+
     try:
         async with session.post(url, data=body, headers=headers, allow_redirects=False) as resp:
-            await resp.content.read(1024)  # đọc ít, đủ để giải phóng kết nối
+            await resp.content.read(1024)
             if 200 <= resp.status < 300:
                 return resp.status, None
             return resp.status, f"HTTP {resp.status}"
@@ -336,12 +375,15 @@ async def _post(session: aiohttp.ClientSession, row: dict) -> tuple[int | None, 
 
 
 async def deliver_due(limit: int = 50) -> int:
-    async with db.transaction() as conn:
+    """Xử lý hàng đợi webhook cross-tenant bằng system connection."""
+    async with db.system_transaction() as conn:
         cur = await conn.execute(
-            "SELECT d.*, e.url, e.secret_version FROM webhook_deliveries d "
+            "SELECT d.*, e.url, e.secret_version, e.secret_scheme, e.secret_ciphertext, "
+            "       e.kek_id, e.prev_secret_ciphertext "
+            "FROM webhook_deliveries d "
             "JOIN webhook_endpoints e ON e.id = d.endpoint_id "
             "WHERE d.status = 'pending' AND d.next_attempt_at <= now() "
-            "ORDER BY d.next_attempt_at LIMIT %s FOR UPDATE OF d SKIP LOCKED",
+            "ORDER BY d.next_attempt_at, d.seq LIMIT %s FOR UPDATE OF d SKIP LOCKED",
             (limit,),
         )
         rows = await cur.fetchall()
@@ -354,12 +396,11 @@ async def deliver_due(limit: int = 50) -> int:
         )
 
     async with aiohttp.ClientSession(connector=_connector(), timeout=TIMEOUT) as session:
-        results = await asyncio.gather(*(_post(session, row) for row in rows))
-
+        results = [await _post(session, row) for row in rows]
     for row, (status_code, error) in zip(rows, results):
         attempts = row["attempts"] + 1
         if error is None:
-            await db.execute(
+            await db.system_execute(
                 "UPDATE webhook_deliveries SET status = 'succeeded', attempts = %s, "
                 "last_status_code = %s, last_error = NULL, delivered_at = now() WHERE id = %s",
                 (attempts, status_code, row["id"]),
@@ -367,7 +408,7 @@ async def deliver_due(limit: int = 50) -> int:
             continue
         give_up = attempts > len(RETRY_DELAYS)
         logger.info("Webhook %s lần %s thất bại: %s", row["id"], attempts, error)
-        await db.execute(
+        await db.system_execute(
             "UPDATE webhook_deliveries SET status = %s, attempts = %s, last_status_code = %s, "
             "last_error = %s, next_attempt_at = now() + make_interval(secs => %s) WHERE id = %s",
             (

@@ -21,7 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "agent"))
 
-from app import audit, config, documents, plans, security, signing, trust, webhooks  # noqa: E402
+from app import audit, config, documents, plans, secrets_crypto, security, signing, storage, trust, webhooks  # noqa: E402
 from app.errors import ApiError  # noqa: E402
 from keysource import KeySourceError, ecdsa_raw_to_der, pss_salt_length  # noqa: E402
 
@@ -343,3 +343,100 @@ def test_o_ky_hep_van_giu_du_ba_muc(monkeypatch) -> None:
 def test_hinh_chu_ky_khong_con_ly_do_va_noi_ky(monkeypatch) -> None:
     text = " ".join(_appearance_text(165, 90, "NGUYEN VAN A", monkeypatch)).lower()
     assert "lý do" not in text and "nơi ký" not in text
+
+# --------------------------------------------------------------------------
+# SaaS Tenancy: Standard Webhooks, KEK & Storage (SPEC §4, §5, §8)
+# --------------------------------------------------------------------------
+
+
+def _verify_std_webhook_reference(secret: str, header: str, event_id: str, timestamp: int, body: bytes) -> bool:
+    """Mã tham chiếu theo chuẩn Standard Webhooks để kiểm tra chữ ký."""
+    import base64
+    import hashlib
+    import hmac
+    raw = secret.removeprefix("whsec_")
+    padded = raw + "=" * (-len(raw) % 4)
+    secret_bytes = base64.b64decode(padded)
+    to_sign = f"{event_id}.{timestamp}.".encode("utf-8") + body
+    expected = "v1," + base64.b64encode(hmac.new(secret_bytes, to_sign, hashlib.sha256).digest()).decode("ascii")
+    return any(hmac.compare_digest(expected, sig) for sig in header.split())
+
+
+def test_standard_webhooks_signature_khop_chuan_tham_chieu() -> None:
+    secret = secrets_crypto.new_webhook_secret()
+    assert secret.startswith("whsec_")
+    event_id = "evt_0123456789abcdef"
+    timestamp = 1714000000
+    body = b'{"id":"evt_0123456789abcdef","type":"document.sent","tenant_id":"org_123","data":{}}'
+
+    sig_header = secrets_crypto.sign_standard_webhook(secret, event_id, timestamp, body)
+    assert sig_header.startswith("v1,")
+    assert _verify_std_webhook_reference(secret, sig_header, event_id, timestamp, body)
+
+    # Sai nội dung hoặc timestamp phải bị từ chối
+    assert not _verify_std_webhook_reference(secret, sig_header, event_id, timestamp + 1, body)
+    assert not _verify_std_webhook_reference(secret, sig_header, event_id, timestamp, body + b" ")
+
+
+def test_standard_webhooks_rotation_ho_tro_nhieu_chu_ky() -> None:
+    sec1 = secrets_crypto.new_webhook_secret()
+    sec2 = secrets_crypto.new_webhook_secret()
+    event_id = "evt_rotate"
+    timestamp = 1714000000
+    body = b'{"tenant_id":"org_123"}'
+
+    sig1 = secrets_crypto.sign_standard_webhook(sec1, event_id, timestamp, body)
+    sig2 = secrets_crypto.sign_standard_webhook(sec2, event_id, timestamp, body)
+    dual_header = f"{sig1} {sig2}"
+
+    # Người nhận cầm bất kỳ secret nào trong đợt rotate cũng xác thực được
+    assert _verify_std_webhook_reference(sec1, dual_header, event_id, timestamp, body)
+    assert _verify_std_webhook_reference(sec2, dual_header, event_id, timestamp, body)
+
+
+def test_ma_hoa_kek_aes_256_gcm_va_rewrap(monkeypatch) -> None:
+    import base64
+    # Giả lập 2 KEK khác nhau (32 byte base64)
+    kek1 = base64.b64encode(b"\x01" * 32).decode()
+    kek2 = base64.b64encode(b"\x02" * 32).decode()
+
+    monkeypatch.setenv("WEBSIGNER_KEK", kek1)
+    monkeypatch.setenv("WEBSIGNER_KEK_ID", "k1")
+
+    secret = "whsec_BiMatCanBaoVe12345"
+    ciphertext, kid = secrets_crypto.encrypt_secret(secret, "k1")
+    assert kid == "k1"
+    assert ciphertext != secret.encode()
+
+    # Giải mã đúng
+    assert secrets_crypto.decrypt_secret(ciphertext, "k1") == secret
+
+    # Rewrap sang KEK mới k2
+    monkeypatch.setenv("WEBSIGNER_OLD_KEKS", f"k1:{kek1}")
+    monkeypatch.setenv("WEBSIGNER_KEK", kek2)
+    monkeypatch.setenv("WEBSIGNER_KEK_ID", "k2")
+
+    # Đọc lại từ k1 và mã hoá lại sang k2
+    decrypted = secrets_crypto.decrypt_secret(ciphertext, "k1")
+    new_ct, new_kid = secrets_crypto.encrypt_secret(decrypted, "k2")
+    assert new_kid == "k2"
+    assert secrets_crypto.decrypt_secret(new_ct, "k2") == secret
+
+
+def test_layout_luu_tru_khoa_moi_va_fallback_khoa_cu(tmp_path: pathlib.Path, monkeypatch) -> None:
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    org_id = "org_test123"
+    doc_id = "doc_0123456789abcdef"
+
+    # Ghi revision theo layout mới t/<org_id>/documents/<doc_id>/rev0.pdf
+    storage.write_revision(org_id, doc_id, 0, "Bản mới".encode("utf-8"))
+    assert (tmp_path / f"t/{org_id}/documents/{doc_id}/rev0.pdf").is_file()
+    assert storage.read_revision(org_id, doc_id, 0) == "Bản mới".encode("utf-8")
+
+    # Giả lập tệp cũ ở documents/<doc_id>/rev1.pdf
+    legacy_file = tmp_path / f"documents/{doc_id}/rev1.pdf"
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.write_bytes("Bản cũ".encode("utf-8"))
+
+    # Đọc rev1 với org_id nhưng chưa có ở layout mới -> tự fallback về tệp cũ
+    assert storage.read_revision(org_id, doc_id, 1) == "Bản cũ".encode("utf-8")

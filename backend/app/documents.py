@@ -29,7 +29,7 @@ from typing import Any, Literal
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import audit, db, mailer, plans, security, signing, storage, trust, verify, webhooks
+from . import audit, db, mailer, plans, secrets_crypto, security, signing, storage, trust, verify, webhooks
 from .auth import Principal
 from .errors import ApiError, bad_request, conflict, not_found
 
@@ -212,7 +212,12 @@ def recipient_view(row: dict, doc: dict, *, org_view: bool, base_url: str | None
         view["email"] = row["email"]
         view["notified_at"] = _iso(row["notified_at"])
         if base_url and row["status"] == "pending" and doc["status"] not in TERMINAL:
-            view["signing_url"] = signing_url(base_url, row)
+            org_info = {
+                "signing_key_scheme": doc.get("org_signing_key_scheme"),
+                "signing_key_ciphertext": doc.get("org_signing_key_ciphertext"),
+                "signing_key_kek_id": doc.get("org_signing_key_kek_id"),
+            }
+            view["signing_url"] = signing_url(base_url, row, org_info)
     return view
 
 
@@ -245,9 +250,12 @@ def document_view(
     return view
 
 
-def signing_url(base_url: str, recipient: dict) -> str:
-    return f"{base_url}/s/{security.recipient_token(recipient['id'], recipient['token_version'])}"
-
+def signing_url(base_url: str, recipient: dict, org: dict | None = None) -> str:
+    if org is not None:
+        token = secrets_crypto.recipient_token_for_org(org, recipient["id"], recipient["token_version"])
+    else:
+        token = security.recipient_token(recipient["id"], recipient["token_version"])
+    return f"{base_url}/s/{token}"
 
 # --------------------------------------------------------------------------
 # Truy vấn
@@ -255,6 +263,9 @@ def signing_url(base_url: str, recipient: dict) -> str:
 
 _DOC_SELECT = (
     "SELECT d.*, o.name AS org_name, o.embed_origins AS org_embed_origins, "
+    "       o.signing_key_ciphertext AS org_signing_key_ciphertext, "
+    "       o.signing_key_kek_id AS org_signing_key_kek_id, "
+    "       o.signing_key_scheme AS org_signing_key_scheme, "
     "       u.email AS creator_email, u.name AS creator_name "
     "FROM documents d JOIN organizations o ON o.id = d.org_id "
     "LEFT JOIN users u ON u.id = d.created_by_user "
@@ -386,15 +397,22 @@ def _check_recipients(specs: list[RecipientSpec], page_count: int, plan: plans.P
             )
 
 
-async def _insert_recipients(conn: db.Conn, doc_id: str, specs: list[RecipientSpec]) -> None:
+async def _insert_recipients(
+    conn: db.Conn, org_id: str, doc_id: str, specs: list[RecipientSpec], *, org: dict | None = None
+) -> None:
     for position, spec in enumerate(specs):
         recipient_id = security.new_id("rcp")
+        if org:
+            token = secrets_crypto.recipient_token_for_org(org, recipient_id, 1)
+        else:
+            token = security.recipient_token(recipient_id, 1)
         await conn.execute(
-            "INSERT INTO recipients (id, document_id, position, routing_order, role, method, name, "
+            "INSERT INTO recipients (id, org_id, document_id, position, routing_order, role, method, name, "
             "email, tax_code, field_page, field_box, token_hash) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 recipient_id,
+                org_id,
                 doc_id,
                 position,
                 spec.order if spec.order is not None else position + 1,
@@ -405,10 +423,9 @@ async def _insert_recipients(conn: db.Conn, doc_id: str, specs: list[RecipientSp
                 spec.tax_code,
                 spec.field.page if spec.field else None,
                 list(spec.field.box) if spec.field else None,
-                security.token_hash(security.recipient_token(recipient_id, 1)),
+                security.token_hash(token),
             ),
         )
-
 
 async def create(
     principal: Principal,
@@ -428,7 +445,7 @@ async def create(
     doc_id = f"doc_{secrets.token_hex(8)}"
     filename = (filename or "tai-lieu.pdf").replace("/", "_").replace("\\", "_")[:200]
     title = (spec.title or filename.removesuffix(".pdf")).strip() or "Tài liệu"
-    await asyncio.to_thread(storage.write_revision, doc_id, 0, data)
+    await asyncio.to_thread(storage.write_revision, principal.org_id, doc_id, 0, data)
     try:
         async with db.transaction() as conn:
             await plans.consume_document(conn, principal.org_id, plan)
@@ -451,10 +468,10 @@ async def create(
                 ),
             )
             await conn.execute(
-                "INSERT INTO revisions (document_id, revision, sha256, size) VALUES (%s, 0, %s, %s)",
-                (doc_id, hashlib.sha256(data).digest(), len(data)),
+                "INSERT INTO revisions (org_id, document_id, revision, sha256, size) VALUES (%s, %s, 0, %s, %s)",
+                (principal.org_id, doc_id, hashlib.sha256(data).digest(), len(data)),
             )
-            await _insert_recipients(conn, doc_id, spec.recipients)
+            await _insert_recipients(conn, principal.org_id, doc_id, spec.recipients, org=principal.org)
             await audit.append(
                 conn,
                 doc_id,
@@ -470,7 +487,7 @@ async def create(
             doc = await _load_by_id(conn, doc_id)
             recipients = await load_recipients(doc_id, conn=conn)
     except BaseException:
-        await asyncio.to_thread(storage.delete_document, doc_id)
+        await asyncio.to_thread(storage.delete_document, principal.org_id, doc_id)
         raise
     webhooks.wake()
     return document_view(doc, recipients, base_url=base_url)
@@ -519,7 +536,7 @@ async def replace_recipients(
         doc = await _locked_draft(conn, principal.org_id, doc_id)
         _check_recipients(specs, doc["page_count"], principal.plan)
         await conn.execute("DELETE FROM recipients WHERE document_id = %s", (doc_id,))
-        await _insert_recipients(conn, doc_id, specs)
+        await _insert_recipients(conn, principal.org_id, doc_id, specs, org=principal.org)
         await conn.execute("UPDATE documents SET updated_at = now() WHERE id = %s", (doc_id,))
         await audit.append(
             conn,
@@ -576,7 +593,7 @@ async def _notify_active(conn: db.Conn, doc_id: str, base_url: str) -> None:
             f"Chào {recipient['name']},\n\n{doc['org_name']} mời bạn {verb} tài liệu "
             f"«{doc['title']}».\n"
             + (f"\nLời nhắn: {doc['message']}\n" if doc["message"] else "")
-            + f"\nMở tài liệu: {signing_url(base_url, recipient)}\n"
+            + f"\nMở tài liệu: {signing_url(base_url, recipient, {'signing_key_scheme': doc.get('org_signing_key_scheme'), 'signing_key_ciphertext': doc.get('org_signing_key_ciphertext'), 'signing_key_kek_id': doc.get('org_signing_key_kek_id')})}\n"
             + (
                 f"\nHạn chót: {doc['expires_at'].astimezone(plans.VN_TZ):%d/%m/%Y %H:%M}\n"
                 if doc["expires_at"]
@@ -663,7 +680,7 @@ async def delete(principal: Principal, doc_id: str) -> None:
         if doc["status"] == "in_progress":
             raise conflict("in_progress", "Tài liệu đang trong luồng ký — huỷ (void) trước khi xoá")
         await conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
-    await asyncio.to_thread(storage.delete_document, doc_id)
+    await asyncio.to_thread(storage.delete_document, principal.org_id, doc_id)
 
 
 async def _org_recipient(conn: db.Conn, principal: Principal, doc_id: str, recipient_id: str) -> tuple[dict, dict]:
@@ -700,9 +717,10 @@ async def rotate_link(principal: Principal, doc_id: str, recipient_id: str, *, b
         if doc["status"] in TERMINAL or recipient["status"] != "pending":
             raise conflict("not_pending", "Người nhận này không còn việc phải làm")
         version = recipient["token_version"] + 1
+        token = secrets_crypto.recipient_token_for_org(principal.org, recipient_id, version)
         cur = await conn.execute(
             "UPDATE recipients SET token_version = %s, token_hash = %s WHERE id = %s RETURNING *",
-            (version, security.token_hash(security.recipient_token(recipient_id, version)), recipient_id),
+            (version, security.token_hash(token), recipient_id),
         )
         recipient = await cur.fetchone()
         await audit.append(conn, doc_id, "recipient.link_rotated", principal.actor, {"recipient_id": recipient_id})
@@ -718,7 +736,7 @@ async def embed_origins_for_token(token: str) -> list[str]:
     """Origin được nhúng trang ký của liên kết này; [] nếu liên kết sai."""
     if not 20 <= len(token) <= 100:
         return []
-    row = await db.fetchone(
+    row = await db.system_fetchone(
         "SELECT o.embed_origins FROM recipients r JOIN documents d ON d.id = r.document_id "
         "JOIN organizations o ON o.id = d.org_id WHERE r.token_hash = %s",
         (security.token_hash(token),),
@@ -729,18 +747,19 @@ async def embed_origins_for_token(token: str) -> list[str]:
 async def by_token(token: str) -> tuple[dict, dict, list[dict]]:
     if not 20 <= len(token) <= 100:
         raise not_found("Liên kết ký không hợp lệ")
-    recipient = await db.fetchone(
+    recipient = await db.system_fetchone(
         "SELECT * FROM recipients WHERE token_hash = %s", (security.token_hash(token),)
     )
     if recipient is None:
         raise not_found("Liên kết ký không hợp lệ hoặc đã bị thu hồi")
-    async with db.connection() as conn:
+    org_id = recipient["org_id"]
+    db.set_tenant_id(org_id)
+    async with db.transaction(org_id=org_id) as conn:
         doc = await _load_by_id(conn, recipient["document_id"])
         recipients = await load_recipients(doc["id"], conn=conn)
     if doc["status"] == "draft":
         raise not_found("Tài liệu chưa được gửi")
     return doc, recipient, recipients
-
 
 def turn(doc: dict, recipient: dict, recipients: list[dict]) -> dict:
     """Người nhận này làm gì được lúc này, và nếu không thì vì sao."""
@@ -830,7 +849,7 @@ async def _complete_if_done(conn: db.Conn, doc_id: str, base_url: str) -> None:
             recipient["email"],
             f"Đã hoàn tất: {doc['title']}",
             f"Chào {recipient['name']},\n\nTài liệu «{doc['title']}» của {doc['org_name']} "
-            f"đã được tất cả các bên xử lý xong.\nXem và tải bản đã ký: {signing_url(base_url, recipient)}\n",
+            f"đã được tất cả các bên xử lý xong.\nXem và tải bản đã ký: {signing_url(base_url, recipient, {'signing_key_scheme': doc.get('org_signing_key_scheme'), 'signing_key_ciphertext': doc.get('org_signing_key_ciphertext'), 'signing_key_kek_id': doc.get('org_signing_key_kek_id')})}\n",
         )
     await mailer.enqueue(
         conn,
@@ -898,13 +917,13 @@ async def commit_signature(
         if doc["revision"] != expected_revision:
             raise conflict("concurrent_signature", "Tài liệu vừa được người khác ký, hãy ký lại")
         revision = expected_revision + 1
-        await asyncio.to_thread(storage.write_revision, doc["id"], revision, signed_pdf)
+        await asyncio.to_thread(storage.write_revision, doc["org_id"], doc["id"], revision, signed_pdf)
         await conn.execute(
             "UPDATE documents SET revision = %s, updated_at = now() WHERE id = %s", (revision, doc["id"])
         )
         await conn.execute(
-            "INSERT INTO revisions (document_id, revision, sha256, size) VALUES (%s, %s, %s, %s)",
-            (doc["id"], revision, hashlib.sha256(signed_pdf).digest(), len(signed_pdf)),
+            "INSERT INTO revisions (org_id, document_id, revision, sha256, size) VALUES (%s, %s, %s, %s, %s)",
+            (doc["org_id"], doc["id"], revision, hashlib.sha256(signed_pdf).digest(), len(signed_pdf)),
         )
         await conn.execute(
             "UPDATE recipients SET status = 'signed', acted_at = now(), signed_by = %s, "
@@ -946,7 +965,7 @@ async def commit_signature(
 
 async def expire_due(limit: int = 50) -> int:
     expired = 0
-    async with db.transaction() as conn:
+    async with db.system_transaction() as conn:
         cur = await conn.execute(
             "SELECT id, org_id FROM documents WHERE status = 'in_progress' AND expires_at <= now() "
             "ORDER BY expires_at LIMIT %s FOR UPDATE SKIP LOCKED",
@@ -974,7 +993,7 @@ async def revision_file(doc: dict, revision: int | None) -> tuple[bytes, int]:
     target = doc["revision"] if revision is None else revision
     if not 0 <= target <= doc["revision"]:
         raise not_found("Không có revision này")
-    return await asyncio.to_thread(storage.read_revision, doc["id"], target), target
+    return await asyncio.to_thread(storage.read_revision, doc["org_id"], doc["id"], target), target
 
 
 def _verify_sync(pdf: bytes) -> list[dict]:
@@ -991,7 +1010,7 @@ async def verify_report(doc: dict) -> list[dict]:
     )
     if row and row["verify_trust"] == cache_key and row["verify_report"] is not None:
         return row["verify_report"]
-    pdf = await asyncio.to_thread(storage.read_revision, doc["id"], doc["revision"])
+    pdf = await asyncio.to_thread(storage.read_revision, doc["org_id"], doc["id"], doc["revision"])
     reports = await asyncio.to_thread(_verify_sync, pdf)
     await db.execute(
         "UPDATE revisions SET verify_report = %s, verify_trust = %s WHERE document_id = %s AND revision = %s",
@@ -1006,11 +1025,13 @@ async def audit_trail(principal: Principal, doc_id: str) -> dict:
 
 
 async def save_logo(recipient_id: str, data: bytes, fmt: str) -> None:
+    rec = await db.fetchone("SELECT org_id FROM recipients WHERE id = %s", (recipient_id,))
+    org_id = rec["org_id"] if rec else (db.current_tenant_id() or "")
     await db.execute(
-        "INSERT INTO recipient_logos (recipient_id, data, format) VALUES (%s, %s, %s) "
-        "ON CONFLICT (recipient_id) DO UPDATE SET data = EXCLUDED.data, format = EXCLUDED.format, "
+        "INSERT INTO recipient_logos (recipient_id, org_id, data, format) VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (recipient_id) DO UPDATE SET org_id = EXCLUDED.org_id, data = EXCLUDED.data, format = EXCLUDED.format, "
         "updated_at = now()",
-        (recipient_id, data, fmt),
+        (recipient_id, org_id, data, fmt),
     )
 
 

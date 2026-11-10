@@ -1070,3 +1070,378 @@ def _appearance_check_marks(signed: bytes) -> list[bool]:
         if normal is not None:
             marks.append(has_mark(deref(normal).get("/Resources", {})))
     return marks
+
+
+# --------------------------------------------------------------------------
+# SaaS Multi-Tenancy & Partner API Tests (SPEC §1-3, §5, §7-8)
+# --------------------------------------------------------------------------
+
+
+def test_rls_cach_ly_to_chuc_truy_van_truc_tiep_khong_where(lab, pdf):
+    """SPEC §3 Conformance: Khi bỏ qua mệnh đề WHERE của app, tenant-scoped connection
+    vẫn không thể đọc, sửa, xoá hoặc trỏ khoá ngoại vào dòng của tổ chức khác.
+    """
+    import psycopg
+
+    org_a = register(lab.main, lab=lab)
+    org_a_api = api_client(org_a)
+    doc_a = create_document(org_a_api, pdf, [SIGNER_A])
+    org_a_id = doc_a["recipients"][0]["signing_url"].split("/s/")[0]  # dummy
+    _, me_a = org_a.get("/api/auth/me")
+    org_a_id = me_a["org"]["id"]
+
+    org_b = register(lab.main, lab=lab)
+    org_b_api = api_client(org_b)
+    doc_b = create_document(org_b_api, pdf, [SIGNER_B])
+    _, me_b = org_b.get("/api/auth/me")
+    org_b_id = me_b["org"]["id"]
+
+    with psycopg.connect(lab.db_url) as conn:
+        with conn.cursor() as cur:
+            with conn.transaction():
+                cur.execute("SET LOCAL ROLE websigner_tenant")
+                cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_b_id,))
+
+                # 1. SELECT không có WHERE: chỉ thấy dòng của org_b
+                cur.execute("SELECT id, org_id FROM documents")
+                docs = cur.fetchall()
+                assert docs, "Phải thấy documents của org_b"
+                assert all(r[1] == org_b_id for r in docs)
+                assert doc_a["id"] not in [r[0] for r in docs]
+
+                cur.execute("SELECT id, org_id FROM recipients")
+                recipients = cur.fetchall()
+                assert all(r[1] == org_b_id for r in recipients)
+
+                cur.execute("SELECT id FROM organizations")
+                orgs = cur.fetchall()
+                assert len(orgs) == 1 and orgs[0][0] == org_b_id
+
+                # 2. UPDATE không có WHERE: chỉ sửa dòng của org_b, org_a an toàn
+                cur.execute("UPDATE documents SET title = 'BiSuaBoiTenantB'")
+
+        # Kiểm tra ngoài transaction với quyền superuser: doc_a không bị sửa
+        with conn.cursor() as cur:
+            cur.execute("SELECT title FROM documents WHERE id = %s", (doc_a["id"],))
+            assert cur.fetchone()[0] != "BiSuaBoiTenantB"
+
+        # 3. Thử tạo dòng con trỏ khoá ngoại sang tài liệu của org_a: bị chặn bởi Composite FK
+        with conn.cursor() as cur:
+            with pytest.raises(Exception):
+                with conn.transaction():
+                    cur.execute("SET LOCAL ROLE websigner_tenant")
+                    cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_b_id,))
+                    cur.execute(
+                        "INSERT INTO recipients (id, org_id, document_id, position, routing_order, role, method, name, token_hash) "
+                        "VALUES ('rcp_hack', %s, %s, 1, 1, 'signer', 'digital', 'Hacker', '\\x1234')",
+                        (org_b_id, doc_a["id"]),
+                    )
+
+
+def test_partner_api_va_on_behalf_of(lab, pdf):
+    """SPEC §1-2: Partner tạo tenant, quản lý tenant, On-Behalf-Of và cô lập giữa các partner."""
+    # Tạo 2 partner trực tiếp trong DB
+    import hashlib
+
+    partner_1_id = f"prt_1_{uuid.uuid4().hex[:8]}"
+    partner_1_key = f"wsp_live_p1_{uuid.uuid4().hex}"
+    partner_2_id = f"prt_2_{uuid.uuid4().hex[:8]}"
+    partner_2_key = f"wsp_live_p2_{uuid.uuid4().hex}"
+
+    lab.sql(
+        "INSERT INTO partners (id, name, prefix, key_hash) VALUES (%s, %s, %s, %s)",
+        (partner_1_id, "Partner 1", partner_1_key[:15], hashlib.sha256(partner_1_key.encode()).digest()),
+    )
+    lab.sql(
+        "INSERT INTO partners (id, name, prefix, key_hash) VALUES (%s, %s, %s, %s)",
+        (partner_2_id, "Partner 2", partner_2_key[:15], hashlib.sha256(partner_2_key.encode()).digest()),
+    )
+
+    p1_client = lab.main.client(api_key=partner_1_key)
+    p2_client = lab.main.client(api_key=partner_2_key)
+
+    # 1. Partner 1 tạo tenant
+    ext_id = f"crm-{uuid.uuid4().hex[:8]}"
+    status, tenant_1 = p1_client.post(
+        "/v1/partner/tenants",
+        {"name": "Tenant P1", "external_id": ext_id, "plan": "enterprise", "settings": {"embed_origins": ["https://erp.p1.vn"]}},
+    )
+    assert status == 201, tenant_1
+    t1_id = tenant_1["id"]
+    assert tenant_1["external_id"] == ext_id
+    assert tenant_1["settings"]["embed_origins"] == ["https://erp.p1.vn"]
+
+    # Tạo lại cùng external_id: trả về 200 idempotent
+    status, t1_same = p1_client.post("/v1/partner/tenants", {"name": "Tên khác", "external_id": ext_id})
+    assert status == 200
+    assert t1_same["id"] == t1_id
+
+    # 2. Partner 2 tạo tenant
+    status, tenant_2 = p2_client.post("/v1/partner/tenants", {"name": "Tenant P2"})
+    assert status == 201
+    t2_id = tenant_2["id"]
+
+    # 3. Cô lập giữa các partner: Partner 1 không thể chạm vào tenant của Partner 2 -> 404 (never 403)
+    status, body = p1_client.get(f"/v1/partner/tenants/{t2_id}")
+    assert status == 404 and body["code"] == "not_found"
+
+    status, body = p1_client.patch(f"/v1/partner/tenants/{t2_id}", {"name": "Hacked"})
+    assert status == 404 and body["code"] == "not_found"
+
+    status, body = p1_client.post(f"/v1/partner/tenants/{t2_id}/api-keys", {"name": "HackKey"})
+    assert status == 404 and body["code"] == "not_found"
+
+    # On-Behalf-Of trỏ vào tenant của partner khác -> 404
+    status, body = p1_client.get("/v1/documents", headers={"On-Behalf-Of": t2_id})
+    assert status == 404 and body["code"] == "not_found"
+
+    # 4. On-Behalf-Of đúng tenant của mình: thao tác tài liệu bình thường
+    headers_t1 = {"On-Behalf-Of": t1_id}
+    doc_p1 = create_document(p1_client, pdf, [SIGNER_A], headers=headers_t1)
+    assert doc_p1["status"] == "in_progress"
+
+    status, doc_view = p1_client.get(f"/v1/documents/{doc_p1['id']}", headers=headers_t1)
+    assert status == 200
+    assert doc_view["id"] == doc_p1["id"]
+
+    # 5. Partner gọi /v1/documents mà thiếu On-Behalf-Of -> 400 on_behalf_of_required
+    status, body = p1_client.get("/v1/documents")
+    assert status == 400 and body["code"] == "on_behalf_of_required"
+
+    # 6. Tenant API key gọi /v1/partner/* -> 403 partner_only
+    status, key_data = p1_client.post(f"/v1/partner/tenants/{t1_id}/api-keys", {"name": "ERP"})
+    assert status == 201
+    tenant_key_client = lab.main.client(api_key=key_data["secret"])
+    status, body = tenant_key_client.get("/v1/partner/tenants")
+    assert status == 403 and body["code"] == "partner_only"
+
+
+def test_memberships_multi_org_switch(lab):
+    """Thành viên: một email thuộc nhiều tổ chức, mời email có sẵn thêm membership, chuyển active org."""
+    user_email = f"multi-{uuid.uuid4().hex[:8]}@e2e.vn"
+
+    # User đăng ký Org 1
+    user_client = lab.main.client()
+    status, me1 = user_client.post(
+        "/api/auth/register",
+        {"org_name": "Tổ chức A", "name": "Nguyễn Văn Đa", "email": user_email, "password": PASSWORD},
+    )
+    assert status == 201
+    user_client.csrf = me1["csrf_token"]
+    org_1_id = me1["org"]["id"]
+
+    # Chủ Org 2 đăng ký
+    org2_owner = register(lab.main, lab=lab)
+    _, me2 = org2_owner.get("/api/auth/me")
+    org_2_id = me2["org"]["id"]
+
+    # Org 2 mời user_email đã tồn tại -> thêm membership thay vì báo lỗi email_taken
+    status, invited = org2_owner.post(
+        "/api/org/members",
+        {"email": user_email, "name": "Đa (Thành viên B)", "role": "admin"},
+    )
+    assert status == 201, invited
+    assert invited["member"]["role"] == "admin"
+    # Vì user đã có tài khoản/mật khẩu, invite_url là None
+    assert invited["invite_url"] is None
+
+    # User kiểm tra danh sách tổ chức của mình
+    status, orgs = user_client.get("/api/auth/orgs")
+    assert status == 200
+    org_ids = [o["id"] for o in orgs]
+    assert org_1_id in org_ids and org_2_id in org_ids
+
+    # Org 1 đang active
+    active_org = next(o for o in orgs if o["id"] == org_1_id)
+    assert active_org["active"] is True
+
+    # Chuyển active org sang Org 2
+    status, switched = user_client.post("/api/auth/switch-org", {"org_id": org_2_id})
+    assert status == 200
+    assert switched["org"]["id"] == org_2_id
+
+    # Kiểm tra lại /api/auth/me
+    status, me_switched = user_client.get("/api/auth/me")
+    assert status == 200
+    assert me_switched["org"]["id"] == org_2_id
+    assert me_switched["user"]["role"] == "admin"
+
+    # Chuyển sang một org không thuộc về mình -> 403 not_member
+    status, body = user_client.post("/api/auth/switch-org", {"org_id": "org_khong_ton_tai_hoac_la"})
+    assert status == 403 and body["code"] == "not_member"
+
+
+def test_migration_003_tu_database_001_002_co_san_du_lieu():
+    """Kiểm tra migration 003 áp dụng sạch sẽ trên DB cũ có sẵn dữ liệu từ 001/002."""
+    import psycopg
+    from harness import ADMIN_DSN
+
+    test_db = f"test_mig_{uuid.uuid4().hex[:8]}"
+    url_admin = ADMIN_DSN
+    mig_dir = pathlib.Path(__file__).resolve().parents[1] / "backend" / "app" / "migrations"
+
+    with psycopg.connect(url_admin, autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{test_db}"')
+
+    test_url = url_admin.rsplit("/", 1)[0] + "/" + test_db
+    try:
+        with psycopg.connect(test_url) as conn:
+            with conn.cursor() as cur:
+                # 1. Chạy 001 và 002
+                cur.execute((mig_dir / "001_platform.sql").read_text(encoding="utf-8"))
+                cur.execute((mig_dir / "002_handwriting_embed.sql").read_text(encoding="utf-8"))
+
+                # 2. Nạp dữ liệu giả lập kiểu cũ
+                org_id = "org_legacy001"
+                user_id = "usr_legacy001"
+                cur.execute("INSERT INTO organizations (id, name, plan) VALUES (%s, 'Legacy Org', 'free')", (org_id,))
+                cur.execute(
+                    "INSERT INTO users (id, org_id, email, name, role, password_hash) "
+                    "VALUES (%s, %s, 'legacy@e2e.vn', 'Legacy User', 'owner', 'hash123')",
+                    (user_id, org_id),
+                )
+                sess_hash = b"\x01" * 32
+                cur.execute(
+                    "INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at) "
+                    "VALUES (%s, %s, 'csrf123', now() + interval '1 day')",
+                    (sess_hash, user_id),
+                )
+                doc_id = "doc_legacy00000001"
+                cur.execute(
+                    "INSERT INTO documents (id, org_id, title, filename, status, page_count) "
+                    "VALUES (%s, %s, 'Legacy Doc', 'doc.pdf', 'in_progress', 1)",
+                    (doc_id, org_id),
+                )
+                cur.execute(
+                    "INSERT INTO revisions (document_id, revision, sha256, size) "
+                    "VALUES (%s, 0, %s, 100)",
+                    (doc_id, b"\x02" * 32),
+                )
+                rcp_id = "rcp_legacy001"
+                cur.execute(
+                    "INSERT INTO recipients (id, document_id, position, routing_order, role, name, token_hash) "
+                    "VALUES (%s, %s, 0, 1, 'signer', 'Signer 1', %s)",
+                    (rcp_id, doc_id, b"\x03" * 32),
+                )
+                cur.execute(
+                    "INSERT INTO events (document_id, seq, type, created_at, canonical, hash) "
+                    "VALUES (%s, 1, 'document.created', now(), '{}', %s)",
+                    (doc_id, b"\x04" * 32),
+                )
+                wh_id = "wh_legacy001"
+                cur.execute(
+                    "INSERT INTO webhook_endpoints (id, org_id, url, events) "
+                    "VALUES (%s, %s, 'https://example.com/hook', ARRAY['*'])",
+                    (wh_id, org_id),
+                )
+                cur.execute(
+                    "INSERT INTO webhook_deliveries (id, endpoint_id, event_id, event_type, payload) "
+                    "VALUES ('whd_legacy001', %s, 'evt_1', 'document.sent', '{}'::jsonb)",
+                    (wh_id,),
+                )
+                conn.commit()
+
+                # 3. Chạy migration 003
+                cur.execute((mig_dir / "003_saas_tenancy.sql").read_text(encoding="utf-8"))
+                conn.commit()
+
+                # 4. Kiểm tra các bảng đã được cập nhật org_id và backfill chính xác
+                cur.execute("SELECT org_id FROM revisions WHERE document_id = %s", (doc_id,))
+                assert cur.fetchone()[0] == org_id
+
+                cur.execute("SELECT org_id FROM recipients WHERE id = %s", (rcp_id,))
+                assert cur.fetchone()[0] == org_id
+
+                cur.execute("SELECT org_id FROM events WHERE document_id = %s", (doc_id,))
+                assert cur.fetchone()[0] == org_id
+
+                cur.execute("SELECT org_id FROM webhook_deliveries WHERE id = 'whd_legacy001'")
+                assert cur.fetchone()[0] == org_id
+
+                cur.execute("SELECT org_id, role FROM memberships WHERE user_id = %s AND org_id = %s", (user_id, org_id))
+                row = cur.fetchone()
+                assert row is not None and row[1] == "owner"
+
+                cur.execute("SELECT org_id FROM sessions WHERE token_hash = %s", (sess_hash,))
+                assert cur.fetchone()[0] == org_id
+    finally:
+        with psycopg.connect(url_admin, autocommit=True) as conn:
+            conn.execute(f'DROP DATABASE IF EXISTS "{test_db}" WITH (FORCE)')
+
+
+def test_admin_cli_commands(lab):
+    """CLI: create-partner, attach-partner, list-partners, rewrap-secrets, migrate-storage."""
+    env = {
+        **os.environ,
+        "WEBSIGNER_DATABASE_URL": lab.db_url,
+        "WEBSIGNER_DATA": str(lab.data),
+        "PYTHONPATH": str(ROOT / "backend"),
+    }
+
+    # 1. create-partner
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "create-partner", "CLI Partner Test"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert "wsp_live_" in res.stdout
+    for line in res.stdout.splitlines():
+        if "Đã tạo đối tác" in line:
+            partner_id = line.split()[4]
+        if "wsp_live_" in line:
+            partner_key = line.split()[-1]
+
+    # 2. list-partners
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "list-partners"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert partner_id in res.stdout
+
+    # 3. attach-partner
+    org = register(lab.main, lab=lab)
+    _, me = org.get("/api/auth/me")
+    org_id = me["org"]["id"]
+
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "attach-partner", org_id, partner_id],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert f"Đã gắn tổ chức {org_id}" in res.stdout
+
+    # 4. rewrap-secrets
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "rewrap-secrets"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert "Đã rewrap bí mật" in res.stdout
+
+    # 5. migrate-storage [--dry-run]
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "migrate-storage", "--dry-run"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert "[DRY-RUN]" in res.stdout
+
+    res = subprocess.run(
+        [str(PYTHON), "-m", "app.admin", "migrate-storage"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert "Kết quả di chuyển lưu trữ:" in res.stdout

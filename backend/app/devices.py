@@ -71,7 +71,7 @@ def _device(row: dict) -> Device:
 
 async def register(token: str, name: str, platform: str) -> Device:
     """Ghi danh máy chạy agent. Gọi lại với cùng token thì cập nhật, không nhân bản."""
-    row = await db.fetchone(
+    row = await db.system_fetchone(
         "INSERT INTO devices (id, token_hash, name, platform) VALUES (%s, %s, %s, %s) "
         "ON CONFLICT (token_hash) DO UPDATE SET name = EXCLUDED.name, "
         "platform = EXCLUDED.platform, last_seen = now() RETURNING *",
@@ -81,20 +81,20 @@ async def register(token: str, name: str, platform: str) -> Device:
 
 
 async def by_token(token: str) -> Device:
-    row = await db.fetchone("SELECT * FROM devices WHERE token_hash = %s", (token_hash(token),))
+    row = await db.system_fetchone("SELECT * FROM devices WHERE token_hash = %s", (token_hash(token),))
     if row is None:
         raise DeviceError("Thiết bị chưa đăng ký hoặc đã bị thu hồi")
     return _device(row)
 
 
 async def by_id(device_id: str) -> Device | None:
-    row = await db.fetchone("SELECT * FROM devices WHERE id = %s", (device_id,))
+    row = await db.system_fetchone("SELECT * FROM devices WHERE id = %s", (device_id,))
     return _device(row) if row else None
 
 
 async def touch(device_id: str) -> None:
     """Ghi nhận agent vừa kết nối — để biết máy nào còn sống."""
-    await db.execute("UPDATE devices SET last_seen = now() WHERE id = %s", (device_id,))
+    await db.system_execute("UPDATE devices SET last_seen = now() WHERE id = %s", (device_id,))
 
 
 def issue_ticket(device_id: str) -> str:
@@ -125,7 +125,7 @@ def _expire_tickets() -> None:
 
 
 async def bind_browser(browser_token: str, device_id: str) -> None:
-    await db.execute(
+    await db.system_execute(
         "INSERT INTO device_browsers (token_hash, device_id) VALUES (%s, %s) "
         "ON CONFLICT (token_hash) DO UPDATE SET device_id = EXCLUDED.device_id, activated_at = now()",
         (token_hash(browser_token), device_id),
@@ -136,7 +136,7 @@ async def browser_device(browser_token: str | None) -> Device | None:
     """Thiết bị mà trình duyệt này đã kích hoạt, None nếu chưa/đã bị thu hồi."""
     if not browser_token:
         return None
-    row = await db.fetchone(
+    row = await db.system_fetchone(
         "SELECT d.* FROM device_browsers b JOIN devices d ON d.id = b.device_id "
         "WHERE b.token_hash = %s",
         (token_hash(browser_token),),
@@ -146,12 +146,12 @@ async def browser_device(browser_token: str | None) -> Device | None:
 
 async def unbind_browser(browser_token: str | None) -> None:
     if browser_token:
-        await db.execute("DELETE FROM device_browsers WHERE token_hash = %s", (token_hash(browser_token),))
+        await db.system_execute("DELETE FROM device_browsers WHERE token_hash = %s", (token_hash(browser_token),))
 
 
 async def forget(device_id: str) -> None:
     """Thu hồi máy: mọi trình duyệt đã kích hoạt theo nó mất hiệu lực ngay (cascade)."""
-    await db.execute("DELETE FROM devices WHERE id = %s", (device_id,))
+    await db.system_execute("DELETE FROM devices WHERE id = %s", (device_id,))
 
 
 async def import_legacy_registry() -> int:
@@ -164,7 +164,7 @@ async def import_legacy_registry() -> int:
         return 0
     data = json.loads(LEGACY_REGISTRY.read_text(encoding="utf-8"))
     imported = 0
-    async with db.transaction() as conn:
+    async with db.system_transaction() as conn:
         for device_id, record in (data.get("devices") or {}).items():
             cur = await conn.execute(
                 "INSERT INTO devices (id, token_hash, name, platform, created_at, last_seen) "
