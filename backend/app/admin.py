@@ -243,7 +243,7 @@ async def _import_legacy(org_id: str) -> None:
                     "VALUES (%s, %s, %s, %s, %s, 'signer', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         rid, org_id, doc_id, r["position"], r["order"], r["name"], r["tax_code"],
-                        security.token_hash(security.recipient_token(rid, 1)),
+                        security.token_hash(secrets_crypto.recipient_token_for_org(org, rid, 1)),
                         "signed" if r["signed"] else "pending",
                         record.get("signed_at"), record.get("signer"), record.get("tax_code"),
                         record.get("field_name"), record.get("page"), record.get("profile"),

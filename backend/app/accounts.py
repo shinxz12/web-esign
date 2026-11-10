@@ -104,31 +104,32 @@ async def register(org_name: str, name: str, email: str, password: str) -> dict:
     signing_key = secrets_crypto.new_signing_key()
     key_ciphertext, kek_id = secrets_crypto.encrypt_secret(signing_key)
 
-    async with db.system_transaction() as conn:
-        await conn.execute(
-            "INSERT INTO organizations (id, name, signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
-            "VALUES (%s, %s, %s, %s, 'kek')",
-            (org_id, org_name.strip(), key_ciphertext, kek_id),
-        )
+    try:
+        async with db.system_transaction() as conn:
+            existing_user = await conn.execute("SELECT 1 FROM users WHERE lower(email) = %s", (email,))
+            if await existing_user.fetchone():
+                raise ApiError(409, "email_taken", "Email này đã có tài khoản")
 
-        existing_user = await conn.execute("SELECT * FROM users WHERE lower(email) = %s", (email,))
-        user_row = await existing_user.fetchone()
-        if user_row is None:
+            await conn.execute(
+                "INSERT INTO organizations (id, name, signing_key_ciphertext, signing_key_kek_id, signing_key_scheme) "
+                "VALUES (%s, %s, %s, %s, 'kek')",
+                (org_id, org_name.strip(), key_ciphertext, kek_id),
+            )
+
             cur = await conn.execute(
                 "INSERT INTO users (id, email, name, password_hash) "
                 "VALUES (%s, %s, %s, %s) RETURNING *",
                 (user_id, email, name.strip(), password_hash),
             )
             user_row = await cur.fetchone()
-        else:
-            user_id = user_row["id"]
 
-        await conn.execute(
-            "INSERT INTO memberships (user_id, org_id, role) VALUES (%s, %s, 'owner')",
-            (user_id, org_id),
-        )
-        return {**dict(user_row), "org_id": org_id, "role": "owner"}
-
+            await conn.execute(
+                "INSERT INTO memberships (user_id, org_id, role) VALUES (%s, %s, 'owner')",
+                (user_id, org_id),
+            )
+            return {**dict(user_row), "org_id": org_id, "role": "owner"}
+    except UniqueViolation:
+        raise ApiError(409, "email_taken", "Email này đã có tài khoản") from None
 
 async def authenticate(email: str, password: str) -> dict | None:
     try:
@@ -144,10 +145,11 @@ async def authenticate(email: str, password: str) -> dict | None:
         "SELECT org_id, role FROM memberships WHERE user_id = %s ORDER BY created_at LIMIT 1",
         (row["id"],),
     )
+    if not m:
+        raise ApiError(403, "no_organization", "Tài khoản không thuộc tổ chức nào")
     res = dict(row)
-    if m:
-        res["org_id"] = m["org_id"]
-        res["role"] = m["role"]
+    res["org_id"] = m["org_id"]
+    res["role"] = m["role"]
     return res
 
 
@@ -160,7 +162,9 @@ async def create_session(
             "SELECT org_id FROM memberships WHERE user_id = %s ORDER BY created_at LIMIT 1",
             (user_id,),
         )
-        org_id = m["org_id"] if m else ""
+        if not m:
+            raise ApiError(403, "no_organization", "Tài khoản không thuộc tổ chức nào")
+        org_id = m["org_id"]
 
     token = security.random_token()
     csrf = security.random_token(24)
@@ -229,8 +233,8 @@ async def change_password(user: dict, current: str, new: str, keep_session: str 
 
 async def issue_user_token(conn: db.Conn, user_id: str, purpose: str, ttl: timedelta) -> str:
     token = security.random_token()
-    await conn.execute("DELETE FROM user_tokens WHERE user_id = %s AND purpose = %s", (user_id, purpose))
-    await conn.execute(
+    await db.system_execute("DELETE FROM user_tokens WHERE user_id = %s AND purpose = %s", (user_id, purpose))
+    await db.system_execute(
         "INSERT INTO user_tokens (token_hash, user_id, purpose, expires_at) VALUES (%s, %s, %s, %s)",
         (security.token_hash(token), user_id, purpose, _now() + ttl),
     )
@@ -278,10 +282,11 @@ async def accept_invite(token: str, name: str, password: str) -> dict:
             (user_id,),
         )
         mrow = await m.fetchone()
+        if not mrow:
+            raise ApiError(403, "no_organization", "Tài khoản không thuộc tổ chức nào")
         res = dict(user)
-        if mrow:
-            res["org_id"] = mrow["org_id"]
-            res["role"] = mrow["role"]
+        res["org_id"] = mrow["org_id"]
+        res["role"] = mrow["role"]
         return res
 
 
@@ -428,25 +433,23 @@ async def invite_member(
                 )
                 return user_view(member), None
             else:
-                # Chưa kích hoạt mật khẩu: sinh token mời
-                token = await issue_user_token(conn, user_id, "invite", INVITE_TTL)
-                link = f"{base_url}/#/invite?t={token}"
+                # Chưa kích hoạt mật khẩu nhưng danh tính đã tồn tại: không cấp liên kết kích hoạt
+                # cho admin tổ chức này để tránh chiếm đoạt tài khoản (Finding #3).
                 await mailer.enqueue(
                     conn,
+                    org["id"],
                     email,
                     f"{inviter['name']} mời bạn tham gia {org['name']} trên Web Signer",
-                    f"Chào {user_row['name']},\n\n{inviter['name']} mời bạn tham gia tổ chức "
-                    f"{org['name']}.\nĐặt mật khẩu để bắt đầu (liên kết hết hạn sau 7 ngày):\n"
-                    f"{link}\n",
+                    f"Chào {user_row['name']},\n\n{inviter['name']} mời bạn tham gia tổ chức {org['name']}.\n"
+                    f"Vui lòng kích hoạt tài khoản qua thư mời ban đầu đã gửi tới bạn.\n",
                 )
-                return user_view(member), link
+                return user_view(member), None
         else:
             user_id = security.new_id("usr")
-            cur = await conn.execute(
+            new_user = await db.system_fetchone(
                 "INSERT INTO users (id, email, name, password_hash) VALUES (%s, %s, %s, NULL) RETURNING *",
                 (user_id, email, name.strip()),
             )
-            new_user = await cur.fetchone()
             await conn.execute(
                 "INSERT INTO memberships (user_id, org_id, role) VALUES (%s, %s, %s)",
                 (user_id, org["id"], role),

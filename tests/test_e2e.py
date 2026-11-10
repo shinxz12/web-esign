@@ -1445,3 +1445,139 @@ def test_admin_cli_commands(lab):
         check=True,
     )
     assert "Kết quả di chuyển lưu trữ:" in res.stdout
+
+
+def test_security_finding_1_reject_registration_existing_identity(lab):
+    """[P1 Finding #1] POST /api/auth/register phải từ chối 409 email_taken nếu email đã tồn tại."""
+    email = f"sec1-{uuid.uuid4().hex[:8]}@e2e.vn"
+    client1 = lab.main.client()
+    status, me1 = client1.post(
+        "/api/auth/register",
+        {"org_name": "Org 1", "name": "User 1", "email": email, "password": PASSWORD},
+    )
+    assert status == 201
+
+    client2 = lab.main.client()
+    status, body = client2.post(
+        "/api/auth/register",
+        {"org_name": "Org Hacker", "name": "Hacker", "email": email, "password": "mat-khau-hacker-123"},
+    )
+    assert status == 409 and body["code"] == "email_taken"
+
+
+def test_security_finding_3_do_not_return_takeover_links_for_pending_identities(lab):
+    """[P1 Finding #3] Mời email đã tồn tại nhưng chưa đặt mật khẩu không được trả invite_url cho admin."""
+    email = f"sec3-{uuid.uuid4().hex[:8]}@e2e.vn"
+    org_a = register(lab.main, lab=lab)
+    status, inv_a = org_a.post("/api/org/members", {"email": email, "name": "Nạn Nhân", "role": "member"})
+    assert status == 201
+    assert inv_a["invite_url"] is not None
+
+    # Org B mời cùng email nạn nhân
+    org_b = register(lab.main, lab=lab)
+    status, inv_b = org_b.post("/api/org/members", {"email": email, "name": "Nạn Nhân", "role": "admin"})
+    assert status == 201
+    # Không được trả URL kích hoạt để tránh admin Org B chiếm đoạt danh tính
+    assert inv_b["invite_url"] is None
+
+
+def test_security_finding_4_revoke_tenant_access_to_global_auth_tables(lab):
+    """[P1 Finding #4] Vai trò websigner_tenant bị cấm truy cập sessions/user_tokens và users có RLS."""
+    import psycopg
+
+    org_a_id = f"org_sec4a_{uuid.uuid4().hex[:8]}"
+    org_b_id = f"org_sec4b_{uuid.uuid4().hex[:8]}"
+    user_a_id = f"usr_sec4a_{uuid.uuid4().hex[:8]}"
+    user_b_id = f"usr_sec4b_{uuid.uuid4().hex[:8]}"
+    lab.sql("INSERT INTO organizations (id, name, plan) VALUES (%s, 'Org 4A', 'enterprise'), (%s, 'Org 4B', 'enterprise')", (org_a_id, org_b_id))
+    lab.sql("INSERT INTO users (id, email, name, password_hash) VALUES (%s, 'u4a@test.vn', 'User 4A', 'hash'), (%s, 'u4b@test.vn', 'User 4B', 'hash')", (user_a_id, user_b_id))
+    lab.sql("INSERT INTO memberships (user_id, org_id, role) VALUES (%s, %s, 'owner'), (%s, %s, 'owner')", (user_a_id, org_a_id, user_b_id, org_b_id))
+    with psycopg.connect(lab.db_url) as conn:
+        with conn.cursor() as cur:
+            # 1. Cấm truy cập sessions
+            with pytest.raises(Exception):
+                with conn.transaction():
+                    cur.execute("SET LOCAL ROLE websigner_tenant")
+                    cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                    cur.execute("SELECT * FROM sessions")
+
+            # 2. Cấm truy cập user_tokens
+            with pytest.raises(Exception):
+                with conn.transaction():
+                    cur.execute("SET LOCAL ROLE websigner_tenant")
+                    cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                    cur.execute("SELECT * FROM user_tokens")
+
+            # 3. users có RLS: tenant A chỉ thấy thành viên của tenant A, không thấy tenant B
+            with conn.transaction():
+                cur.execute("SET LOCAL ROLE websigner_tenant")
+                cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                cur.execute("SELECT id, email, name FROM users")
+                users = cur.fetchall()
+                assert users, "Phải thấy user của org A"
+                assert user_b_id not in [u[0] for u in users]
+
+
+def test_security_finding_5_tenant_scope_queued_emails(lab):
+    """[P1 Finding #5] Bảng emails có org_id và RLS; websigner_tenant chỉ có quyền INSERT với CHECK."""
+    import psycopg
+
+    org_a_id = f"org_sec5a_{uuid.uuid4().hex[:8]}"
+    org_b_id = f"org_sec5b_{uuid.uuid4().hex[:8]}"
+    lab.sql("INSERT INTO organizations (id, name, plan) VALUES (%s, 'Org 5A', 'enterprise'), (%s, 'Org 5B', 'enterprise')", (org_a_id, org_b_id))
+    with psycopg.connect(lab.db_url) as conn:
+        with conn.cursor() as cur:
+            # 1. Tenant không được SELECT emails
+            with pytest.raises(Exception):
+                with conn.transaction():
+                    cur.execute("SET LOCAL ROLE websigner_tenant")
+                    cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                    cur.execute("SELECT * FROM emails")
+
+            # 2. Tenant không được INSERT với org_id của tenant khác
+            with pytest.raises(Exception):
+                with conn.transaction():
+                    cur.execute("SET LOCAL ROLE websigner_tenant")
+                    cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                    cur.execute(
+                        "INSERT INTO emails (org_id, to_addr, subject, body) VALUES (%s, 'h@h.vn', 's', 'b')",
+                        (org_b_id,),
+                    )
+
+            # 3. Tenant INSERT với org_id của chính mình thành công
+            with conn.transaction():
+                cur.execute("SET LOCAL ROLE websigner_tenant")
+                cur.execute("SELECT set_config('app.tenant_id', %s, true)", (org_a_id,))
+                cur.execute(
+                    "INSERT INTO emails (org_id, to_addr, subject, body) VALUES (%s, 'a@a.vn', 's', 'b')",
+                    (org_a_id,),
+                )
+
+
+def test_finding_8_idempotency_key_partner_endpoints(lab):
+    """[P2 Finding #8] Header Idempotency-Key được tuân thủ trên các endpoint tạo của Partner API."""
+    import hashlib
+
+    partner_id = f"prt_{uuid.uuid4().hex[:8]}"
+    partner_key = f"wsp_live_{uuid.uuid4().hex}"
+    lab.sql(
+        "INSERT INTO partners (id, name, prefix, key_hash) VALUES (%s, %s, %s, %s)",
+        (partner_id, "Idem Partner", partner_key[:15], hashlib.sha256(partner_key.encode()).digest()),
+    )
+    p_client = lab.main.client(api_key=partner_key)
+
+    # 1. POST /v1/partner/tenants với Idempotency-Key
+    idem_key = f"idem-tenant-{uuid.uuid4().hex}"
+    headers = {"Idempotency-Key": idem_key}
+    status1, t1 = p_client.post("/v1/partner/tenants", {"name": "Tenant Idem 1"}, headers=headers)
+    assert status1 == 201
+
+    # Gọi lại đúng key -> Replay
+    status2, t2 = p_client.post("/v1/partner/tenants", {"name": "Tenant Idem 1"}, headers=headers)
+    assert status2 == 201
+    assert t2["id"] == t1["id"]
+    assert p_client.last_headers["Idempotent-Replayed"] == "true"
+
+    # Gọi lại cùng key nhưng khác payload -> 422 idempotency_mismatch
+    status3, body3 = p_client.post("/v1/partner/tenants", {"name": "Payload Khac"}, headers=headers)
+    assert status3 == 422 and body3["code"] == "idempotency_mismatch"

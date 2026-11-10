@@ -246,9 +246,14 @@ async def migrate_storage(dry_run: bool = False) -> dict[str, int]:
                     would_migrate += 1
                 else:
                     new_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(old_path, new_path)
+                    tmp_target = new_path.with_suffix(".tmp")
+                    data = old_path.read_bytes()
+                    with open(tmp_target, "wb") as f:
+                        f.write(data)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    tmp_target.replace(new_path)
                     migrated += 1
-
     return {
         "examined": total_examined,
         "migrated": migrated,

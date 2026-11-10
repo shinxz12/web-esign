@@ -26,13 +26,32 @@ def enabled() -> bool:
     return config.SMTP_URL is not None
 
 
-async def enqueue(conn: db.Conn, to: str | None, subject: str, body: str) -> bool:
+async def enqueue(
+    conn: db.Conn,
+    org_id_or_to: str | None,
+    to_or_subject: str | None,
+    subject_or_body: str,
+    body: str | None = None,
+) -> bool:
     """Xếp email vào hàng đợi trong transaction của người gọi. -> đã xếp hay chưa."""
-    if not enabled() or not to:
+    if not enabled():
+        return False
+    if body is not None:
+        org_id = org_id_or_to or "system"
+        to = to_or_subject
+        subject = subject_or_body
+        content = body
+    else:
+        org_id = db.current_tenant_id() or "system"
+        to = org_id_or_to
+        subject = to_or_subject or ""
+        content = subject_or_body
+
+    if not to:
         return False
     await conn.execute(
-        "INSERT INTO emails (to_addr, subject, body) VALUES (%s, %s, %s)",
-        (to, subject, body),
+        "INSERT INTO emails (org_id, to_addr, subject, body) VALUES (%s, %s, %s, %s)",
+        (org_id, to, subject, content),
     )
     return True
 

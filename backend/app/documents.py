@@ -588,6 +588,7 @@ async def _notify_active(conn: db.Conn, doc_id: str, base_url: str) -> None:
         verb = "ký" if recipient["role"] == "signer" else "duyệt"
         queued = await mailer.enqueue(
             conn,
+            doc["org_id"],
             recipient["email"],
             f"{doc['org_name']} mời bạn {verb}: {doc['title']}",
             f"Chào {recipient['name']},\n\n{doc['org_name']} mời bạn {verb} tài liệu "
@@ -846,6 +847,7 @@ async def _complete_if_done(conn: db.Conn, doc_id: str, base_url: str) -> None:
     for recipient in recipients:
         await mailer.enqueue(
             conn,
+            doc["org_id"],
             recipient["email"],
             f"Đã hoàn tất: {doc['title']}",
             f"Chào {recipient['name']},\n\nTài liệu «{doc['title']}» của {doc['org_name']} "
@@ -853,6 +855,7 @@ async def _complete_if_done(conn: db.Conn, doc_id: str, base_url: str) -> None:
         )
     await mailer.enqueue(
         conn,
+        doc["org_id"],
         doc["creator_email"],
         f"Đã hoàn tất: {doc['title']}",
         f"Tài liệu «{doc['title']}» đã hoàn tất.\n{base_url}/#/documents/{doc_id}\n",
@@ -894,6 +897,7 @@ async def decline(recipient: dict, reason: str, *, ip: str | None, user_agent: s
         await webhooks.enqueue(conn, doc["org_id"], "document.declined", await _event_payload(conn, doc["id"]))
         await mailer.enqueue(
             conn,
+            doc["org_id"],
             doc["creator_email"],
             f"Bị từ chối: {doc['title']}",
             f"{recipient['name']} đã từ chối tài liệu «{doc['title']}».\nLý do: {reason}\n",

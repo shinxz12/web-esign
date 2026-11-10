@@ -54,14 +54,17 @@ CREATE TABLE IF NOT EXISTS memberships (
 );
 CREATE INDEX IF NOT EXISTS memberships_org ON memberships (org_id);
 
--- Chuyển dữ liệu người dùng cũ sang bảng memberships
+-- Chuyển dữ liệu người dùng cũ sang bảng memberships (chỉ nạp dòng có org_id/role không null)
 INSERT INTO memberships (user_id, org_id, role, created_at)
 SELECT id, org_id, role, created_at FROM users
+WHERE org_id IS NOT NULL AND role IS NOT NULL
 ON CONFLICT (user_id, org_id) DO NOTHING;
 
--- Cho phép users.org_id và users.role NULL vì vai trò gắn theo từng tổ chức
+-- Cho phép users.org_id và users.role NULL vì vai trò gắn theo từng tổ chức;
+-- xoá dữ liệu cột cũ để an toàn khi chạy lại migration
 ALTER TABLE users ALTER COLUMN org_id DROP NOT NULL;
 ALTER TABLE users ALTER COLUMN role DROP NOT NULL;
+UPDATE users SET org_id = NULL, role = NULL WHERE org_id IS NOT NULL OR role IS NOT NULL;
 
 -- Sessions gắn với tổ chức đang kích hoạt
 ALTER TABLE sessions
@@ -102,7 +105,8 @@ BEGIN
     ALTER TABLE revisions DROP CONSTRAINT IF EXISTS revisions_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'revisions_org_document_fkey') THEN
         ALTER TABLE revisions ADD CONSTRAINT revisions_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
+        ALTER TABLE revisions VALIDATE CONSTRAINT revisions_org_document_fkey;
     END IF;
 END
 $$;
@@ -118,7 +122,8 @@ BEGIN
     ALTER TABLE recipients DROP CONSTRAINT IF EXISTS recipients_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipients_org_document_fkey') THEN
         ALTER TABLE recipients ADD CONSTRAINT recipients_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
+        ALTER TABLE recipients VALIDATE CONSTRAINT recipients_org_document_fkey;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipients_org_id_id_key') THEN
         ALTER TABLE recipients ADD CONSTRAINT recipients_org_id_id_key UNIQUE (org_id, id);
@@ -137,7 +142,8 @@ BEGIN
     ALTER TABLE recipient_logos DROP CONSTRAINT IF EXISTS recipient_logos_recipient_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recipient_logos_org_recipient_fkey') THEN
         ALTER TABLE recipient_logos ADD CONSTRAINT recipient_logos_org_recipient_fkey
-            FOREIGN KEY (org_id, recipient_id) REFERENCES recipients (org_id, id) ON DELETE CASCADE;
+            FOREIGN KEY (org_id, recipient_id) REFERENCES recipients (org_id, id) ON DELETE CASCADE NOT VALID;
+        ALTER TABLE recipient_logos VALIDATE CONSTRAINT recipient_logos_org_recipient_fkey;
     END IF;
 END
 $$;
@@ -153,7 +159,8 @@ BEGIN
     ALTER TABLE events DROP CONSTRAINT IF EXISTS events_document_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'events_org_document_fkey') THEN
         ALTER TABLE events ADD CONSTRAINT events_org_document_fkey
-            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE;
+            FOREIGN KEY (org_id, document_id) REFERENCES documents (org_id, id) ON DELETE CASCADE NOT VALID;
+        ALTER TABLE events VALIDATE CONSTRAINT events_org_document_fkey;
     END IF;
 END
 $$;
@@ -184,7 +191,8 @@ BEGIN
     ALTER TABLE webhook_deliveries DROP CONSTRAINT IF EXISTS webhook_deliveries_endpoint_id_fkey;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'webhook_deliveries_org_endpoint_fkey') THEN
         ALTER TABLE webhook_deliveries ADD CONSTRAINT webhook_deliveries_org_endpoint_fkey
-            FOREIGN KEY (org_id, endpoint_id) REFERENCES webhook_endpoints (org_id, id) ON DELETE CASCADE;
+            FOREIGN KEY (org_id, endpoint_id) REFERENCES webhook_endpoints (org_id, id) ON DELETE CASCADE NOT VALID;
+        ALTER TABLE webhook_deliveries VALIDATE CONSTRAINT webhook_deliveries_org_endpoint_fkey;
     END IF;
 END
 $$;
@@ -192,7 +200,12 @@ CREATE INDEX IF NOT EXISTS webhook_deliveries_org ON webhook_deliveries (org_id)
 
 -- emails
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS org_id text;
+UPDATE emails SET org_id = 'system' WHERE org_id IS NULL;
+ALTER TABLE emails ALTER COLUMN org_id SET NOT NULL;
+CREATE INDEX IF NOT EXISTS emails_org ON emails (org_id);
 
+-- Cho phép idempotency_keys lưu scope partner/tenant mà không bắt buộc FK organizations
+ALTER TABLE idempotency_keys DROP CONSTRAINT IF EXISTS idempotency_keys_org_id_fkey;
 -- -----------------------------------------------------------------------------
 -- 4. Bật Row Level Security (RLS) và tạo Policy
 -- -----------------------------------------------------------------------------
@@ -289,9 +302,6 @@ GRANT USAGE ON SCHEMA public TO websigner_tenant;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     organizations,
     memberships,
-    users,
-    sessions,
-    user_tokens,
     api_keys,
     documents,
     revisions,
@@ -301,8 +311,30 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     webhook_endpoints,
     webhook_deliveries,
     usage_counters,
-    idempotency_keys,
-    emails
+    idempotency_keys
 TO websigner_tenant;
+
+-- Quyền tối thiểu cho users và emails; cấm truy cập sessions và user_tokens
+GRANT SELECT (id, email, name, created_at) ON users TO websigner_tenant;
+GRANT INSERT ON emails TO websigner_tenant;
+
+-- Policy RLS cho users và emails
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS users_tenant ON users;
+CREATE POLICY users_tenant ON users
+    FOR SELECT
+    USING (
+        EXISTS (
+            SELECT 1 FROM memberships m
+            WHERE m.user_id = users.id
+              AND m.org_id = current_setting('app.tenant_id', true)
+        )
+    );
+
+ALTER TABLE emails ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS emails_tenant ON emails;
+CREATE POLICY emails_tenant ON emails
+    USING (org_id = current_setting('app.tenant_id', true))
+    WITH CHECK (org_id = current_setting('app.tenant_id', true));
 
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO websigner_tenant;
