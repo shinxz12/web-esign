@@ -60,6 +60,7 @@ const ui = {
   // Signer: Step 1 Agent
   stepAgent: $("step-agent"),
   agentStatus: $("agent-status"),
+  agentInstruction: $("agent-instruction"),
   deviceInfo: $("device-info"),
   forgetDevice: $("btn-forget-device"),
   manualPair: $("manual-pair"),
@@ -237,20 +238,40 @@ function handleError(error, statusEl) {
     const expected = state.recipient?.tax_code
       ? `MST ${state.recipient.tax_code}`
       : state.recipient?.name || "";
-    msg = error.message || `Chứng thư số không khớp với người được mời (${expected}).`;
+    msg = `Chứng thư số không khớp với người nhận được chỉ định (cần chứng thư của ${expected}). Vui lòng kiểm tra lại USB token đang cắm.`;
   }
   if (statusEl) setStatus(statusEl, msg, "err");
   toast(msg, "err");
 }
 
-function formatDate(isoStr) {
+function formatDateTime(isoStr) {
   if (!isoStr) return "";
   try {
     const d = new Date(isoStr);
-    const p = (v) => String(v).padStart(2, "0");
-    return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    return new Intl.DateTimeFormat("vi-VN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(d);
   } catch {
     return isoStr.replace("T", " ").slice(0, 16);
+  }
+}
+
+function formatDateOnly(isoStr) {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    return new Intl.DateTimeFormat("vi-VN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return isoStr.slice(0, 10);
   }
 }
 
@@ -329,7 +350,7 @@ function renderRecipientsList() {
 
       const order = document.createElement("span");
       order.className = "recipient-order";
-      order.textContent = `#${r.order}`;
+      order.textContent = String(r.order);
       nameWrap.appendChild(order);
 
       const name = document.createElement("span");
@@ -347,7 +368,12 @@ function renderRecipientsList() {
 
       const roleBadge = document.createElement("span");
       roleBadge.className = "badge role-badge";
-      roleBadge.textContent = r.role === "approver" ? "Duyệt" : "Ký";
+      roleBadge.textContent =
+        r.role === "approver"
+          ? "Duyệt"
+          : r.method === "handwritten"
+            ? "Ký tay"
+            : "Ký số";
       top.appendChild(roleBadge);
       item.appendChild(top);
 
@@ -356,6 +382,7 @@ function renderRecipientsList() {
 
       if (r.tax_code) {
         const mst = document.createElement("span");
+        mst.className = "recipient-tax";
         mst.textContent = `MST: ${r.tax_code}`;
         detail.appendChild(mst);
       }
@@ -365,13 +392,13 @@ function renderRecipientsList() {
       let statusTone = "muted";
       if (r.status === "signed") {
         const isHandwritten = r.signature?.profile === "handwritten" || r.method === "handwritten";
-        statusText = `✓ Đã ${isHandwritten ? "ký tay" : "ký"}${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
+        statusText = `Đã ${isHandwritten ? "ký tay" : "ký"}${r.acted_at ? " lúc " + formatDateTime(r.acted_at) : ""}`;
         statusTone = "ok";
       } else if (r.status === "approved") {
-        statusText = `✓ Đã duyệt${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
+        statusText = `Đã duyệt${r.acted_at ? " lúc " + formatDateTime(r.acted_at) : ""}`;
         statusTone = "ok";
       } else if (r.status === "declined") {
-        statusText = `✕ Đã từ chối${r.acted_at ? " lúc " + formatDate(r.acted_at) : ""}`;
+        statusText = `Đã từ chối${r.acted_at ? " lúc " + formatDateTime(r.acted_at) : ""}`;
         statusTone = "err";
       } else {
         statusText = r.role === "approver" ? "Chờ duyệt" : "Chờ ký";
@@ -407,7 +434,7 @@ function applyTurn() {
 
   if (turn.can_act) {
     if (r.role === "approver") {
-      setStatus(ui.turnInfo, "Đến lượt bạn duyệt tài liệu này.", "ok");
+      setStatus(ui.turnInfo, "Đến lượt bạn duyệt tài liệu này. Vui lòng xem kỹ nội dung trước khi duyệt.", "ok");
       ui.approverCard.hidden = false;
       ui.btnApprove.disabled = false;
       ui.btnDeclineApprover.disabled = false;
@@ -424,7 +451,6 @@ function applyTurn() {
       ui.btnHandwrite.hidden = true;
     } else {
       // Role signer
-      setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu.", "ok");
       ui.approverCard.hidden = true;
       ui.signerActionCard.hidden = false;
       ui.btnDeclineSigner.disabled = false;
@@ -438,35 +464,62 @@ function applyTurn() {
         ui.btnSign.hidden = true;
         ui.btnHandwrite.hidden = false;
         ui.profileHint.hidden = true;
-        ui.stepPlace.hidden = false;
-        if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "2";
-        if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí ô ký";
+
+        if (r.field) {
+          state.fixedField = true;
+          state.box = { page: r.field.page, rect: r.field.box };
+          ui.fieldFixedNotice.hidden = false;
+          ui.fieldFixedNotice.textContent = `Vị trí ô ký đã được chỉ định sẵn tại trang ${r.field.page + 1} của tài liệu.`;
+          ui.sizeControlGroup.hidden = true;
+          ui.stepPlace.hidden = true;
+          ui.btnPlace.hidden = true;
+          ui.btnClearBox.hidden = true;
+          setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu. Vẽ chữ ký tay vào khung bên dưới để tiếp tục.", "ok");
+        } else {
+          state.fixedField = false;
+          ui.fieldFixedNotice.hidden = true;
+          ui.sizeControlGroup.hidden = false;
+          ui.stepPlace.hidden = false;
+          if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "2";
+          if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí ô ký";
+          ui.btnPlace.hidden = false;
+          ui.btnPlace.disabled = false;
+          setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu. Làm theo các bước dưới đây để vẽ chữ ký và đặt trên tài liệu.", "ok");
+        }
         requestAnimationFrame(() => resizePadCanvas());
       } else {
+        // Digital signing (token)
         ui.stepAgent.hidden = false;
         ui.stepCert.hidden = false;
         ui.digitalStampOptions.hidden = false;
         ui.stepHandwrite.hidden = true;
         ui.btnSign.hidden = false;
         ui.btnHandwrite.hidden = true;
-        ui.profileHint.hidden = false;
-        ui.stepPlace.hidden = false;
-        if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "3";
-        if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí & hình chữ ký";
-      }
-      if (r.field) {
-        state.fixedField = true;
-        state.box = { page: r.field.page, rect: r.field.box };
-        ui.fieldFixedNotice.hidden = false;
-        ui.sizeControlGroup.hidden = true;
-        ui.btnPlace.hidden = true;
-        ui.btnClearBox.hidden = true;
-      } else {
-        state.fixedField = false;
-        ui.fieldFixedNotice.hidden = true;
-        ui.sizeControlGroup.hidden = false;
-        ui.btnPlace.hidden = false;
-        ui.btnPlace.disabled = false;
+        ui.profileHint.hidden = true;
+
+        if (r.field) {
+          state.fixedField = true;
+          state.box = { page: r.field.page, rect: r.field.box };
+          ui.fieldFixedNotice.hidden = false;
+          ui.fieldFixedNotice.textContent = `Vị trí ô ký đã được chỉ định sẵn tại trang ${r.field.page + 1} của tài liệu.`;
+          ui.sizeControlGroup.hidden = true;
+          ui.btnPlace.hidden = true;
+          ui.btnClearBox.hidden = true;
+          ui.stepPlace.hidden = false;
+          if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "3";
+          if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Hình thức chữ ký";
+          setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu. Làm theo các bước dưới đây để kết nối USB token và ký số.", "ok");
+        } else {
+          state.fixedField = false;
+          ui.fieldFixedNotice.hidden = true;
+          ui.sizeControlGroup.hidden = false;
+          ui.btnPlace.hidden = false;
+          ui.btnPlace.disabled = false;
+          ui.stepPlace.hidden = false;
+          if (ui.stepPlaceNum) ui.stepPlaceNum.textContent = "3";
+          if (ui.stepPlaceText) ui.stepPlaceText.textContent = "Vị trí & hình thức chữ ký";
+          setStatus(ui.turnInfo, "Đến lượt bạn ký tài liệu. Làm theo các bước dưới đây để kết nối USB token và ký số.", "ok");
+        }
       }
       updateCanSign();
     }
@@ -482,8 +535,8 @@ function applyTurn() {
     ui.btnClearBox.hidden = true;
     ui.btnSign.hidden = true;
     ui.btnHandwrite.hidden = true;
+
     if (r.role === "signer" && r.field && r.status === "pending") {
-      // Nếu là người ký có ô ký đặt sẵn nhưng chưa đến lượt, vẫn giữ toạ độ để hiển thị vị trí
       state.fixedField = true;
       state.box = { page: r.field.page, rect: r.field.box };
     }
@@ -491,23 +544,24 @@ function applyTurn() {
     const waiting = turn.waiting_for?.length
       ? turn.waiting_for.join(", ")
       : "người trước";
+    const actedTime = r.acted_at ? formatDateTime(r.acted_at) : "";
 
     const reasonMessages = {
-      not_your_turn: `Chưa tới lượt bạn — đang chờ ${waiting}.`,
+      not_your_turn: `Đang chờ ${waiting} ký trước. Bạn sẽ nhận được thông báo khi đến lượt.`,
       already_acted:
         r.status === "approved"
-          ? "Bạn đã duyệt tài liệu này."
+          ? `Bạn đã duyệt tài liệu này${actedTime ? " lúc " + actedTime : ""}.`
           : r.status === "signed"
             ? ((r.signature?.profile === "handwritten" || r.method === "handwritten")
-                ? "Bạn đã ký tay tài liệu này."
-                : "Bạn đã ký tài liệu này.")
+                ? `Bạn đã ký tay tài liệu này${actedTime ? " lúc " + actedTime : ""}.`
+                : `Bạn đã ký tài liệu này${actedTime ? " lúc " + actedTime : ""}.`)
             : r.status === "declined"
-              ? "Bạn đã từ chối tài liệu này."
+              ? `Bạn đã từ chối tài liệu này${actedTime ? " lúc " + actedTime : ""}.`
               : "Bạn đã xử lý tài liệu này rồi.",
-      document_completed: "Tài liệu đã hoàn tất.",
-      document_declined: "Tài liệu đã bị từ chối.",
+      document_completed: "Tài liệu đã hoàn tất ký bởi tất cả các bên.",
+      document_declined: "Tài liệu này đã bị từ chối ký.",
       document_voided: `Tài liệu đã bị huỷ${state.doc.void_reason ? `: ${state.doc.void_reason}` : ""}.`,
-      document_expired: "Tài liệu đã hết hạn ký.",
+      document_expired: "Tài liệu đã hết thời hạn ký.",
     };
 
     const tone =
@@ -519,7 +573,7 @@ function applyTurn() {
 
     setStatus(
       ui.turnInfo,
-      reasonMessages[turn.reason] || turn.reason || "Tài liệu ở chế độ chỉ đọc.",
+      reasonMessages[turn.reason] || turn.reason || "Tài liệu ở chế độ chỉ xem.",
       tone,
     );
   }
@@ -565,7 +619,11 @@ async function loadPdf() {
     withCredentials: true,
     isEvalSupported: false,
   }).promise;
+
   await layoutPages();
+  if (window.innerWidth <= 768 || (ui.pages.clientWidth > 0 && ui.pages.clientWidth < 650)) {
+    fitWidth();
+  }
   drawBox();
   updateBoxInfo();
 
@@ -693,7 +751,9 @@ function fitWidth() {
   const first = state.pages[0];
   if (!first) return;
   const natural = first.page.getViewport({ scale: 1 }).width;
-  setScale((ui.pages.clientWidth - 56) / natural);
+  const containerW = ui.pages.clientWidth > 0 ? ui.pages.clientWidth : window.innerWidth;
+  const targetW = Math.max(260, containerW - 32);
+  setScale(targetW / natural);
 }
 
 function updateZoomLabel() {
@@ -752,7 +812,7 @@ function enablePlacing(on) {
   state.placing = on && Boolean(state.turn?.can_act);
   ui.placeHint.hidden = !state.placing;
   ui.btnPlace.classList.toggle("active", state.placing);
-  ui.btnPlace.textContent = state.placing ? "✕ Huỷ đặt" : "✎ Đặt chữ ký";
+  ui.btnPlace.textContent = state.placing ? "Huỷ đặt" : "Đặt ô ký";
   for (const item of state.pages) {
     item.overlay.classList.toggle("placing", state.placing);
   }
@@ -795,7 +855,7 @@ ui.pages.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   placeBoxAt(item, event.clientX, event.clientY);
   enablePlacing(false);
-  toast("Đã đặt ô ký — kéo để chỉnh lại vị trí.");
+  toast("Đã đặt ô ký — bạn có thể kéo để căn chỉnh lại vị trí.");
 });
 
 function pageOfEvent(event) {
@@ -826,13 +886,22 @@ function drawBox() {
   const [sx2, sy2] = item.viewport.convertToViewportPoint(x2, y1);
 
   const div = document.createElement("div");
-  div.className = `sig-box${state.fixedField ? " fixed" : ""}`;
+  const isPendingTarget = Boolean(state.turn?.can_act && state.recipient?.role === "signer");
+  div.className = `sig-box${state.fixedField ? " fixed" : ""}${isPendingTarget ? " target" : ""}`;
   const width = Math.abs(sx2 - sx1);
   const height = Math.abs(sy2 - sy1);
   div.style.left = `${Math.min(sx1, sx2)}px`;
   div.style.top = `${Math.min(sy1, sy2)}px`;
   div.style.width = `${width}px`;
   div.style.height = `${height}px`;
+
+  if (isPendingTarget) {
+    const badge = document.createElement("div");
+    badge.className = "sig-mark-badge";
+    badge.textContent = "Ký tại đây";
+    div.appendChild(badge);
+  }
+
   const isHandwritten = state.recipient?.method === "handwritten";
   div.appendChild(isHandwritten ? previewHandwriteNode() : previewNode());
 
@@ -848,7 +917,7 @@ function drawBox() {
 function handleNode() {
   const grip = document.createElement("div");
   grip.className = "sig-grip";
-  grip.textContent = "⠿ kéo";
+  grip.textContent = "Kéo để chỉnh";
   return grip;
 }
 
@@ -905,7 +974,7 @@ function previewNode() {
   wrap.style.color = COLOR_HEX[ui.color.value] || COLOR_HEX["xanh-duong"];
   wrap.classList.toggle("bordered", ui.border.checked);
 
-  if (ui.check.checked) {
+  if (ui.check.checked && (state.cert || !state.turn?.can_act)) {
     const check = document.createElement("div");
     check.className = "sig-check";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -941,7 +1010,7 @@ function previewNode() {
         state.cert.tax_code ? `Tax code/MST: ${state.cert.tax_code}` : null,
         `Signing date/Ngày ký: ${nowStamp()}`,
       ].filter(Boolean)
-    : ["Chọn chứng thư ở bước 2 để xem trước nội dung chữ ký."];
+    : ["Vị trí chữ ký số"];
 
   for (const line of lines) {
     const row = document.createElement("div");
@@ -989,19 +1058,19 @@ function updateBoxInfo() {
   if (!state.doc) {
     setStatus(ui.boxInfo, "Chưa mở tài liệu.", "muted");
   } else if (!state.turn?.can_act) {
-    setStatus(ui.boxInfo, "Tài liệu này hiện không nhận chữ ký của bạn.", "muted");
+    setStatus(ui.boxInfo, "", "muted");
   } else if (!state.box) {
     setStatus(
       ui.boxInfo,
-      "Chưa chọn vị trí — bấm “Đặt chữ ký” rồi bấm vào chỗ muốn ký.",
+      "Chưa chọn vị trí. Bấm “Đặt ô ký” rồi bấm vào vị trí muốn ký trên tài liệu.",
       "muted",
     );
+  } else if (state.fixedField) {
+    setStatus(ui.boxInfo, "", "muted");
   } else {
-    const [x1, y1, x2, y2] = state.box.rect;
-    const fixedMsg = state.fixedField ? " (ô ký cố định)" : "";
     setStatus(
       ui.boxInfo,
-      `Trang ${state.box.page + 1} · ${x2 - x1}×${y2 - y1} pt tại (${x1}, ${y1})${fixedMsg}`,
+      `Ô ký được đặt tại trang ${state.box.page + 1}. Bạn có thể kéo ô ký để căn chỉnh lại vị trí.`,
       "ok",
     );
   }
@@ -1190,11 +1259,11 @@ function handleUploadSignature(e) {
   const file = e.target.files?.[0];
   if (!file) return;
   if (!["image/png", "image/jpeg"].includes(file.type)) {
-    toast("Chỉ chấp nhận ảnh PNG hoặc JPEG.", "err");
+    toast("Chỉ chấp nhận ảnh định dạng PNG hoặc JPEG.", "err");
     return;
   }
   if (file.size > 1024 * 1024) {
-    toast("Ảnh chữ ký không được vượt quá 1MB.", "err");
+    toast("Tệp ảnh chữ ký không được vượt quá 1MB.", "err");
     return;
   }
   const reader = new FileReader();
@@ -1205,7 +1274,7 @@ function handleUploadSignature(e) {
     currentStroke = null;
     redrawPad();
     updateHandwriteState();
-    setStatus(ui.padStatus, `Đã tải: ${file.name}`, "ok");
+    setStatus(ui.padStatus, `Đã chọn tệp: ${file.name}`, "ok");
   };
   reader.readAsDataURL(file);
 }
@@ -1234,18 +1303,19 @@ function previewHandwriteNode() {
 
 async function connectAgent() {
   const code = ui.agentCode.value.trim();
-  if (!code) return setStatus(ui.agentStatus, "Nhập mã ghép cặp.", "err");
+  if (!code) return setStatus(ui.agentStatus, "Vui lòng nhập mã ghép cặp gồm 6 chữ số.", "err");
 
-  setStatus(ui.agentStatus, "Đang kết nối agent…", "busy");
+  setStatus(ui.agentStatus, "Đang kết nối ứng dụng Web Signer Agent…", "busy");
   try {
     const data = await api(`/api/agents/${code}/certificates`);
     state.pairingCode = code;
-    setStatus(ui.agentStatus, `Đã kết nối: ${data.agent} (${data.platform})`, "ok");
+    setStatus(ui.agentStatus, `Đã kết nối thành công với Web Signer Agent (${data.agent}).`, "ok");
+    if (ui.agentInstruction) ui.agentInstruction.hidden = true;
     ui.stepAgent.classList.add("done");
     renderCertificates(data.certificates);
   } catch (error) {
     state.pairingCode = null;
-    setStatus(ui.agentStatus, error.message, "err");
+    setStatus(ui.agentStatus, "Không thể kết nối. Vui lòng kiểm tra lại mã trên ứng dụng Web Signer Agent.", "err");
     ui.stepAgent.classList.remove("done");
     ui.certList.replaceChildren();
   }
@@ -1266,15 +1336,15 @@ async function detectDevice() {
   }
 
   ui.forgetDevice.hidden = !info.device;
-  ui.deviceInfo.textContent = info.device ? `Máy: ${info.device.name}` : "";
+  ui.deviceInfo.textContent = info.device ? `Thiết bị: ${info.device.name}` : "";
 
   if (!info.device) {
     setStatus(
       ui.agentStatus,
-      "Trình duyệt này chưa gắn với máy nào. Mở agent trên máy có token, " +
-        "hoặc dùng mã ghép cặp bên dưới.",
+      "Chưa kết nối với Web Signer Agent trên máy tính này.",
       "muted",
     );
+    if (ui.agentInstruction) ui.agentInstruction.hidden = false;
     ui.manualPair.open = true;
     if (window.self !== window.top && ui.iframePairHint) {
       ui.iframePairHint.hidden = false;
@@ -1286,13 +1356,15 @@ async function detectDevice() {
   if (ui.iframePairHint) ui.iframePairHint.hidden = true;
 
   if (!info.online) {
-    setStatus(ui.agentStatus, "Agent chưa chạy trên máy này.", "busy");
+    setStatus(ui.agentStatus, "Web Signer Agent chưa được bật trên máy tính này. Hãy mở ứng dụng để tiếp tục.", "busy");
+    if (ui.agentInstruction) ui.agentInstruction.hidden = false;
     ui.stepAgent.classList.remove("done");
     renderCertificates([]);
     return;
   }
 
-  setStatus(ui.agentStatus, `Đã sẵn sàng: ${info.agent} (${info.platform})`, "ok");
+  setStatus(ui.agentStatus, `Đã kết nối với Web Signer Agent trên máy tính này (${info.agent}).`, "ok");
+  if (ui.agentInstruction) ui.agentInstruction.hidden = true;
   ui.manualPair.open = false;
   ui.stepAgent.classList.add("done");
   renderCertificates(info.certificates);
@@ -1311,7 +1383,7 @@ function renderCertificates(certs) {
     ui.certList.replaceChildren();
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "Chưa thấy chứng thư nào — cắm USB token vào máy.";
+    p.textContent = "Chưa tìm thấy chứng thư số nào trong USB token. Vui lòng cắm USB token vào máy tính và kiểm tra ứng dụng Web Signer Agent.";
     ui.certList.appendChild(p);
     return;
   }
@@ -1327,8 +1399,10 @@ function renderCertificates(certs) {
 
       const meta = document.createElement("div");
       meta.className = "meta";
-      const notAfter = cert.not_after ? cert.not_after.slice(0, 10) : "";
-      meta.textContent = `${cert.issuer}${notAfter ? ` · hiệu lực đến ${notAfter}` : ""}`;
+      const expDate = cert.not_after ? formatDateOnly(cert.not_after) : "";
+      meta.textContent = expDate
+        ? `${cert.issuer}, hiệu lực đến ${expDate}`
+        : cert.issuer;
 
       div.append(cn, meta);
 
@@ -1357,17 +1431,17 @@ function renderCertificates(certs) {
 
 async function sign() {
   if (!state.certId) {
-    return setStatus(ui.signStatus, "Vui lòng chọn chứng thư ở bước 2.", "err");
+    return setStatus(ui.signStatus, "Vui lòng chọn chứng thư số ở bước 2.", "err");
   }
   if (!state.fixedField && !state.box) {
-    return setStatus(ui.signStatus, "Vui lòng chọn vị trí ô ký ở bước 3.", "err");
+    return setStatus(ui.signStatus, "Vui lòng chọn vị trí đặt chữ ký trên tài liệu.", "err");
   }
 
   ui.btnSign.disabled = true;
   ui.btnSign.classList.add("busy");
   setStatus(
     ui.signStatus,
-    "Đang gửi yêu cầu tới agent — xác nhận và nhập PIN trên máy có token…",
+    "Đang gửi yêu cầu tới USB token — vui lòng xác nhận và nhập mã PIN trên máy tính…",
     "busy",
   );
 
@@ -1391,8 +1465,8 @@ async function sign() {
       body: JSON.stringify(payload),
     });
 
-    setStatus(ui.signStatus, "Đã ký xong.", "ok");
-    toast("Ký số thành công.");
+    setStatus(ui.signStatus, "Đã ký số thành công.", "ok");
+    toast("Ký số tài liệu thành công.");
     state.box = null;
     await handleActionResult(result);
     postToParent("websigner.signed");
@@ -1410,7 +1484,7 @@ async function handwrite() {
     return setStatus(ui.signStatus, "Vui lòng vẽ hoặc tải ảnh chữ ký trước khi ký.", "err");
   }
   if (!state.fixedField && !state.box) {
-    return setStatus(ui.signStatus, "Vui lòng chọn vị trí ô ký trên tài liệu.", "err");
+    return setStatus(ui.signStatus, "Vui lòng chọn vị trí đặt chữ ký trên tài liệu.", "err");
   }
 
   ui.btnHandwrite.disabled = true;
@@ -1431,7 +1505,7 @@ async function handwrite() {
       body: JSON.stringify(payload),
     });
 
-    setStatus(ui.signStatus, "Ký tay thành công!", "ok");
+    setStatus(ui.signStatus, "Đã ký tay thành công.", "ok");
     toast("Đã ký tay tài liệu thành công.");
     state.box = null;
     await handleActionResult(result);
@@ -1448,13 +1522,13 @@ async function handwrite() {
 async function approve() {
   ui.btnApprove.disabled = true;
   ui.btnApprove.classList.add("busy");
-  setStatus(ui.approverStatus, "Đang duyệt tài liệu…", "busy");
+  setStatus(ui.approverStatus, "Đang xử lý duyệt tài liệu…", "busy");
 
   try {
     const result = await api(`/api/sign/${state.token}/approve`, {
       method: "POST",
     });
-    setStatus(ui.approverStatus, "Đã duyệt thành công.", "ok");
+    setStatus(ui.approverStatus, "Đã duyệt tài liệu thành công.", "ok");
     toast("Đã duyệt tài liệu.");
     await handleActionResult(result);
     postToParent("websigner.approved");
@@ -1518,7 +1592,7 @@ async function refreshLogo() {
     state.hasLogo = Boolean(res?.has_logo);
     setStatus(
       ui.logoStatus,
-      state.hasLogo ? "Đã có logo, sẽ vẽ bên trái chữ ký." : "Chưa có logo.",
+      state.hasLogo ? "Đã có logo, sẽ hiển thị bên trái chữ ký." : "Chưa có ảnh logo.",
       state.hasLogo ? "ok" : "muted",
     );
   } catch {
@@ -1539,8 +1613,8 @@ async function uploadLogo() {
       body,
     });
     state.logoVersion = Date.now();
-    setStatus(ui.logoStatus, `Đã tải logo ${info.format}.`, "ok");
-    toast("Đã cập nhật logo.");
+    setStatus(ui.logoStatus, `Đã tải ảnh ${info.format}.`, "ok");
+    toast("Đã cập nhật ảnh logo.");
   } catch (error) {
     setStatus(ui.logoStatus, error.message, "err");
     toast(error.message, "err");
@@ -1550,7 +1624,7 @@ async function uploadLogo() {
 }
 
 // --------------------------------------------------------------------------
-// Xác thực chữ ký
+// Kiểm tra chữ ký (Verify)
 // --------------------------------------------------------------------------
 
 async function runVerify() {
@@ -1558,7 +1632,7 @@ async function runVerify() {
   ui.verifyResult.replaceChildren();
   const p = document.createElement("p");
   p.className = "hint";
-  p.textContent = "Đang kiểm tra chữ ký…";
+  p.textContent = "Đang kiểm tra các chữ ký số trong tài liệu…";
   ui.verifyResult.appendChild(p);
 
   try {
@@ -1567,7 +1641,7 @@ async function runVerify() {
       ui.verifyResult.replaceChildren();
       const emptyP = document.createElement("p");
       emptyP.className = "hint";
-      emptyP.textContent = "Tài liệu chưa có chữ ký số.";
+      emptyP.textContent = "Tài liệu chưa có chữ ký số nào.";
       ui.verifyResult.appendChild(emptyP);
       return;
     }
@@ -1584,22 +1658,23 @@ async function runVerify() {
 
         const who = document.createElement("div");
         who.className = "who";
-        who.textContent = `${tone === "valid" ? "✓" : tone === "warn" ? "!" : "✗"} ${report.signer}`;
+        who.textContent = `${tone === "valid" ? "Hợp lệ:" : tone === "warn" ? "Cảnh báo:" : "Không hợp lệ:"} ${report.signer}`;
         div.appendChild(who);
 
         const lines = [
-          `${report.field_name} · ${report.issuer}`,
-          report.tax_code ? `MST ${report.tax_code}` : null,
-          report.signed_at ? `Ký lúc ${formatDate(report.signed_at)}` : null,
+          report.field_name ? `Ô ký: ${report.field_name}` : null,
+          `Nhà cung cấp chứng thư: ${report.issuer}`,
+          report.tax_code ? `Mã số thuế: ${report.tax_code}` : null,
+          report.signed_at ? `Ký lúc ${formatDateTime(report.signed_at)}` : null,
           report.timestamped
-            ? `Dấu thời gian TSA: ${formatDate(report.timestamp_at)}${
+            ? `Dấu thời gian TSA: ${formatDateTime(report.timestamp_at)}${
                 report.timestamp_trusted ? "" : " (chưa tin cậy)"
               }`
-            : "Không có dấu thời gian",
+            : "Không có dấu thời gian TSA",
           report.ltv
-            ? "LTV: kiểm tra thu hồi bằng dữ liệu nhúng trong tệp"
+            ? "LTV: đã nhúng dữ liệu kiểm tra thu hồi"
             : "LTV: chưa nhúng dữ liệu thu hồi",
-          `${report.profile} — ${report.summary}`,
+          `${report.profile}: ${report.summary}`,
           ...(report.problems || []),
           ...(report.notes || []),
         ].filter(Boolean);
@@ -1644,7 +1719,7 @@ ui.forgetDevice.onclick = async () => {
   state.pairingCode = null;
   state.certSignature = null;
   await detectDevice();
-  toast("Đã quên máy này trên trình duyệt hiện tại.");
+  toast("Đã xoá liên kết máy này trên trình duyệt.");
 };
 
 ui.btnSign.onclick = sign;
@@ -1671,6 +1746,7 @@ ui.logoInput.onchange = uploadLogo;
 ui.btnLogoClear.onclick = async () => {
   await api(`/api/sign/${state.token}/logo`, { method: "DELETE" }).catch(() => {});
   await refreshLogo();
+  toast("Đã bỏ ảnh logo.");
 };
 
 ui.zoomIn.onclick = () => setScale(state.scale * 1.2);
@@ -1729,12 +1805,6 @@ window.addEventListener("resize", () => {
 api("/api/config")
   .then((cfg) => {
     state.timestamping = Boolean(cfg.timestamping);
-    const prof = state.profile || cfg.profile || "B-LT";
-    setStatus(
-      ui.profileHint,
-      `Hồ sơ chữ ký: ${prof}${state.timestamping ? " (có dấu thời gian TSA)" : ""}`,
-      "muted",
-    );
   })
   .catch(() => {});
 

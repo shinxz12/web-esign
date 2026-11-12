@@ -9,6 +9,7 @@ export const state = {
   currentRoute: "",
   routeParams: {},
   routeQuery: {},
+  navigationGuard: null,
 };
 
 export const STATUS_LABELS = {
@@ -56,12 +57,12 @@ export const BOX_SIZES = {
 };
 
 export const RECIPIENT_COLORS = [
-  { border: "#3b82f6", bg: "rgba(59, 130, 246, 0.15)", text: "#93c5fd", label: "Xanh dương" },
-  { border: "#10b981", bg: "rgba(16, 185, 129, 0.15)", text: "#6ee7b7", label: "Xanh lá" },
-  { border: "#a855f7", bg: "rgba(168, 85, 247, 0.15)", text: "#d8b4fe", label: "Tím" },
-  { border: "#f59e0b", bg: "rgba(245, 158, 11, 0.15)", text: "#fcd34d", label: "Cam" },
-  { border: "#ec4899", bg: "rgba(236, 72, 153, 0.15)", text: "#f472b6", label: "Hồng" },
-  { border: "#06b6d4", bg: "rgba(6, 182, 212, 0.15)", text: "#67e8f9", label: "Xanh ngọc" },
+  { border: "#23408e", bg: "rgba(35, 64, 142, 0.10)", text: "#1b3370", label: "Xanh dương" },
+  { border: "#15803d", bg: "rgba(21, 128, 61, 0.10)", text: "#14532d", label: "Xanh lá" },
+  { border: "#7e22ce", bg: "rgba(126, 34, 206, 0.10)", text: "#581c87", label: "Tím" },
+  { border: "#b45309", bg: "rgba(180, 83, 9, 0.10)", text: "#78350f", label: "Cam" },
+  { border: "#be123c", bg: "rgba(190, 18, 60, 0.10)", text: "#881337", label: "Đỏ hồng" },
+  { border: "#0e7490", bg: "rgba(14, 116, 144, 0.10)", text: "#155e75", label: "Xanh ngọc" },
 ];
 
 /**
@@ -104,15 +105,20 @@ export function el(tag, props = {}, ...children) {
  * Hiển thị thông báo Toast góc dưới màn hình.
  */
 export function toast(message, type = "info", duration = 4000) {
-  let container = document.getElementById("toasts");
-  if (!container) {
-    container = el("div", { id: "toasts", className: "toasts" });
-    document.body.appendChild(container);
+  const container = document.getElementById("toasts");
+  const text = String(message);
+
+  const activeToasts = Array.from(container.querySelectorAll(".toast:not(.out)"));
+  if (activeToasts.some((t) => t.textContent === text)) return;
+  // Giữ tối đa 3 thông báo: bỏ cái cũ nhất trước khi thêm cái mới
+  for (const old of activeToasts.slice(0, Math.max(0, activeToasts.length - 2))) {
+    old.remove();
   }
+
   const item = el(
     "div",
     { className: `toast ${type === "err" ? "err" : type === "ok" ? "ok" : ""}` },
-    message
+    text
   );
   container.appendChild(item);
   setTimeout(() => {
@@ -214,46 +220,54 @@ export function formatDate(isoString, includeTime = true) {
   try {
     const d = new Date(isoString);
     if (isNaN(d.getTime())) return isoString;
-    return new Intl.DateTimeFormat("vi-VN", {
+    const parts = new Intl.DateTimeFormat("vi-VN", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-      ...(includeTime
-        ? {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-          }
-        : {}),
-    }).format(d);
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const map = {};
+    for (const p of parts) map[p.type] = p.value;
+    const dateStr = `${map.day}/${map.month}/${map.year}`;
+    if (!includeTime) return dateStr;
+    return `${dateStr} ${map.hour}:${map.minute}`;
   } catch {
     return isoString;
   }
 }
 
+let modalIdCounter = 0;
+
 /**
  * Hiển thị Modal Dialog
  */
 export function showModal({ title, content, actions = [], onClose }) {
-  const overlay = el("div", { className: "modal-overlay" });
-  const closeBtn = el(
-    "button",
-    {
-      className: "modal-close",
-      title: "Đóng",
-      onClick: () => {
-        overlay.remove();
-        if (onClose) onClose();
-      },
-    },
-    "✕"
-  );
+  const modalId = `modal-${++modalIdCounter}`;
+  const titleId = `${modalId}-title`;
+  const prevFocused = document.activeElement;
+
+  const overlay = el("div", {
+    className: "modal-overlay",
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-labelledby": title ? titleId : undefined,
+  });
+
+  const closeBtn = el("button", {
+    type: "button",
+    className: "modal-close",
+    "aria-label": "Đóng",
+    title: "Đóng",
+    onClick: () => close(),
+  });
+  closeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M1 1l12 12M13 1L1 13"/></svg>`;
 
   const header = el(
     "div",
     { className: "modal-header" },
-    el("h3", { className: "modal-title" }, title),
+    el("h3", { id: titleId, className: "modal-title" }, title),
     closeBtn
   );
 
@@ -263,17 +277,27 @@ export function showModal({ title, content, actions = [], onClose }) {
     "div",
     { className: "modal-footer" },
     ...actions.map((act) => {
+      let btnClass = act.className;
+      if (!btnClass) {
+        if (act.danger) {
+          btnClass = act.solid ? "button danger solid" : "button danger";
+        } else if (act.primary) {
+          btnClass = "button primary";
+        } else {
+          btnClass = "button";
+        }
+      }
       const btn = el(
         "button",
         {
-          className: act.className || (act.primary ? "primary" : act.danger ? "danger" : ""),
+          type: "button",
+          className: btnClass,
           onClick: async () => {
             if (act.onClick) {
               const keep = await act.onClick(overlay);
               if (keep === false) return;
             }
-            overlay.remove();
-            if (onClose) onClose();
+            close();
           },
         },
         act.label
@@ -285,22 +309,57 @@ export function showModal({ title, content, actions = [], onClose }) {
   const modalBox = el("div", { className: "modal-card" }, header, body, footer);
   overlay.appendChild(modalBox);
 
-  // Nhấn ra ngoài để đóng nếu không phải modal khẩn cấp
+  function close() {
+    overlay.remove();
+    document.removeEventListener("keydown", onKeyDown);
+    if (onClose) onClose();
+    if (prevFocused && typeof prevFocused.focus === "function") {
+      try {
+        prevFocused.focus();
+      } catch {}
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  }
+  document.addEventListener("keydown", onKeyDown);
+
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) {
-      overlay.remove();
-      if (onClose) onClose();
+      close();
     }
   });
 
   document.body.appendChild(overlay);
+
+  requestAnimationFrame(() => {
+    const focusable = modalBox.querySelector(
+      "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button.primary:not([disabled]), button.danger.solid:not([disabled]), button:not([disabled])"
+    );
+    if (focusable) {
+      focusable.focus();
+    } else {
+      closeBtn.focus();
+    }
+  });
+
   return overlay;
 }
 
 /**
  * Hộp thoại xác nhận (Confirm Dialog)
  */
-export function confirmModal({ title = "Xác nhận", message, confirmText = "Đồng ý", danger = false, onConfirm }) {
+export function confirmModal({
+  title = "Xác nhận",
+  message,
+  confirmText = "Đồng ý",
+  danger = false,
+  onConfirm,
+}) {
   showModal({
     title,
     content: el("p", { style: { margin: "8px 0" } }, message),
@@ -309,6 +368,7 @@ export function confirmModal({ title = "Xác nhận", message, confirmText = "Đ
       {
         label: confirmText,
         danger,
+        solid: danger,
         primary: !danger,
         onClick: async () => {
           if (onConfirm) await onConfirm();
@@ -333,7 +393,18 @@ export function promptModal({
     type: "text",
     placeholder,
     value: defaultValue,
+    "aria-label": title,
     style: { width: "100%", marginTop: "8px" },
+  });
+
+  input.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const val = input.value.trim();
+      const overlay = input.closest(".modal-overlay");
+      if (overlay) overlay.remove();
+      if (onConfirm) await onConfirm(val);
+    }
   });
 
   showModal({

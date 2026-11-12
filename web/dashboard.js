@@ -43,7 +43,23 @@ function parseHash() {
 /**
  * Điều hướng Router
  */
+let lastHandledHash = window.location.hash;
+
 async function handleRouting() {
+  if (typeof state.navigationGuard === "function") {
+    const allow = state.navigationGuard();
+    if (!allow) {
+      window.removeEventListener("hashchange", handleRouting);
+      window.location.hash = lastHandledHash;
+      setTimeout(() => {
+        window.addEventListener("hashchange", handleRouting);
+      }, 0);
+      return;
+    }
+    state.navigationGuard = null;
+  }
+  lastHandledHash = window.location.hash;
+
   const { pathPart, segments, query } = parseHash();
   const route = segments[0] || "";
 
@@ -74,6 +90,10 @@ async function handleRouting() {
   const mainArea = document.getElementById("main-content");
   if (!mainArea) return;
 
+  // Đánh dấu layout trình soạn thảo / xem chi tiết
+  const isEditorView = route === "documents" && Boolean(segments[1]) && segments[1] !== "new";
+  mainArea.classList.toggle("dashboard-main-editor", isEditorView);
+
   // 3. Render View tương ứng
   if (route === "login") {
     renderLogin(mainArea);
@@ -102,7 +122,7 @@ async function handleRouting() {
         mainArea.replaceChildren(
           el(
             "div",
-            { className: "card content-card", style: { margin: "24px auto", maxWidth: "600px", textAlign: "center" } },
+            { className: "card not-found-card" },
             el("h3", {}, "Không tìm thấy tài liệu"),
             el("p", { className: "form-error" }, err.message),
             el("a", { href: "#/documents", className: "button primary" }, "Quay lại danh sách")
@@ -195,35 +215,30 @@ function updateShellLayout(isAuthRoute) {
     const navDocs = el(
       "a",
       { href: "#/documents", className: "sidebar-nav-item", dataset: { route: "documents" } },
-      el("span", { className: "nav-icon" }, "📄"),
       el("span", {}, "Tài liệu")
     );
 
     const navDev = el(
       "a",
       { href: "#/developers", className: "sidebar-nav-item", dataset: { route: "developers" }, hidden: isMember },
-      el("span", { className: "nav-icon" }, "⚡"),
       el("span", {}, "Nhà phát triển")
     );
 
     const navMembers = el(
       "a",
       { href: "#/members", className: "sidebar-nav-item", dataset: { route: "members" } },
-      el("span", { className: "nav-icon" }, "👥"),
       el("span", {}, "Thành viên")
     );
 
     const navBilling = el(
       "a",
       { href: "#/billing", className: "sidebar-nav-item", dataset: { route: "billing" } },
-      el("span", { className: "nav-icon" }, "💳"),
       el("span", {}, "Gói & sử dụng")
     );
 
     const navAccount = el(
       "a",
       { href: "#/account", className: "sidebar-nav-item", dataset: { route: "account" } },
-      el("span", { className: "nav-icon" }, "⚙️"),
       el("span", {}, "Tài khoản")
     );
 
@@ -264,7 +279,7 @@ async function boot() {
   appRoot.replaceChildren(
     el("div", { className: "boot-splash" },
       el("div", { className: "boot-logo" }, "Web Signer"),
-      el("div", { className: "muted" }, "Đang khởi tạo ứng dụng…")
+      el("div", { className: "muted" }, "Đang tải…")
     )
   );
 

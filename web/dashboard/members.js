@@ -7,12 +7,31 @@ import {
   api,
   confirmModal,
   el,
-  formatDate,
   ROLE_LABELS,
   showModal,
   state,
   toast,
 } from "./api.js";
+
+function formatShortDate(isoString) {
+  if (!isoString) return "—";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const parts = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}`;
+  } catch {
+    return isoString;
+  }
+}
 
 export async function renderMembers(container) {
   container.replaceChildren();
@@ -34,7 +53,7 @@ export async function renderMembers(container) {
           className: "button primary",
           onClick: inviteMember,
         },
-        "+ Mời thành viên mới"
+        "Mời thành viên"
       )
     : null;
 
@@ -155,7 +174,7 @@ export async function renderMembers(container) {
                 });
               },
             },
-            newRole === "admin" ? "Thăng cấp Admin" : "Chuyển thành Member"
+            newRole === "admin" ? "Chuyển thành Quản trị viên" : "Chuyển thành Thành viên"
           );
 
           // Nút xoá thành viên
@@ -187,7 +206,7 @@ export async function renderMembers(container) {
           actionsTd.append(changeRoleBtn, removeBtn);
         } else if (isOwner) {
           actionsTd.appendChild(
-            el("span", { className: "muted", style: { fontSize: "12px" } }, "🔒 Chủ sở hữu")
+            el("span", { className: "muted", style: { fontSize: "12px" } }, "Chủ sở hữu")
           );
         } else {
           actionsTd.textContent = "—";
@@ -200,39 +219,55 @@ export async function renderMembers(container) {
           el("td", {}, m.email),
           el("td", {}, roleBadge),
           el("td", {}, statusBadge),
-          el("td", { className: "muted" }, formatDate(m.created_at)),
+          el("td", { className: "muted" }, formatShortDate(m.created_at)),
           actionsTd
         );
 
         tableBody.appendChild(tr);
       });
     } catch (err) {
+      const retryBtn = el(
+        "button",
+        {
+          className: "button small",
+          style: { marginTop: "10px" },
+          onClick: () => loadMembers(),
+        },
+        "Thử lại"
+      );
+      const errBox = el(
+        "div",
+        { style: { padding: "20px 12px", textAlign: "center" } },
+        el("p", { className: "muted", style: { margin: 0 } }, "Không thể tải danh sách thành viên lúc này."),
+        retryBtn
+      );
       tableBody.replaceChildren(
-        el(
-          "tr",
-          {},
-          el("td", { colSpan: 6, className: "form-error", style: { textAlign: "center" } }, err.message)
-        )
+        el("tr", {}, el("td", { colSpan: 6 }, errBox))
       );
     }
   }
 
   function inviteMember() {
     const emailInput = el("input", {
+      id: "invite-member-email",
       type: "email",
       required: true,
       placeholder: "dongnghiep@congty.vn",
+      autocomplete: "email",
+      inputMode: "email",
       style: { width: "100%" },
     });
     const nameInput = el("input", {
+      id: "invite-member-name",
       type: "text",
       required: true,
       placeholder: "Nguyễn Văn B",
+      autocomplete: "name",
       style: { width: "100%" },
     });
     const roleSelect = el(
       "select",
-      { style: { width: "100%" } },
+      { id: "invite-member-role", style: { width: "100%" } },
       el("option", { value: "member", selected: true }, "Thành viên (Member)"),
       el("option", { value: "admin" }, "Quản trị viên (Admin)")
     );
@@ -240,11 +275,10 @@ export async function renderMembers(container) {
     const form = el(
       "div",
       {},
-      el("div", { className: "form-group" }, el("label", {}, "Email thành viên *"), emailInput),
-      el("div", { className: "form-group" }, el("label", {}, "Họ và tên *"), nameInput),
-      el("div", { className: "form-group" }, el("label", {}, "Vai trò trong tổ chức"), roleSelect)
+      el("div", { className: "form-group" }, el("label", { htmlFor: "invite-member-email" }, "Email thành viên *"), emailInput),
+      el("div", { className: "form-group" }, el("label", { htmlFor: "invite-member-name" }, "Họ và tên *"), nameInput),
+      el("div", { className: "form-group" }, el("label", { htmlFor: "invite-member-role" }, "Vai trò trong tổ chức"), roleSelect)
     );
-
     showModal({
       title: "Mời thành viên mới",
       content: form,
@@ -269,7 +303,7 @@ export async function renderMembers(container) {
                 body: { email, name, role },
               });
 
-              toast("Đã tạo lời mời thành công!", "ok");
+              toast("Đã tạo lời mời thành công.", "ok");
               loadMembers();
 
               // Hiển thị liên kết lời mời để sao chép
@@ -282,7 +316,7 @@ export async function renderMembers(container) {
               });
 
               showModal({
-                title: "✉ Liên kết mời tham gia",
+                title: "Liên kết mời tham gia",
                 content: el(
                   "div",
                   {},
@@ -295,11 +329,11 @@ export async function renderMembers(container) {
                 ),
                 actions: [
                   {
-                    label: "📋 Sao chép liên kết",
+                    label: "Sao chép liên kết",
                     primary: true,
                     onClick: async () => {
                       await navigator.clipboard.writeText(inviteUrl);
-                      toast("Đã sao chép liên kết lời mời!", "ok");
+                      toast("Đã sao chép liên kết lời mời.", "ok");
                     },
                   },
                   { label: "Đóng" },

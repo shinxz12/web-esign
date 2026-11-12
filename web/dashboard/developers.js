@@ -7,12 +7,31 @@ import {
   api,
   confirmModal,
   el,
-  formatDate,
   promptModal,
   showModal,
   state,
   toast,
 } from "./api.js";
+
+function formatShortDate(isoString) {
+  if (!isoString) return "—";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const parts = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}`;
+  } catch {
+    return isoString;
+  }
+}
 
 export async function renderDevelopers(container) {
   container.replaceChildren();
@@ -31,7 +50,7 @@ export async function renderDevelopers(container) {
     return;
   }
 
-  const heading = el("h2", { className: "page-title" }, "Nhà phát triển & Tích hợp");
+  const heading = el("h2", { className: "page-title" }, "Nhà phát triển và tích hợp");
   const subtext = el(
     "p",
     { className: "muted" },
@@ -60,7 +79,7 @@ async function renderApiKeysSection(wrapper) {
     "div",
     { className: "section-header" },
     el("div", {},
-      el("h3", { style: { margin: 0 } }, "Khoá API (API Keys)"),
+      el("h3", { style: { margin: 0 } }, "Khoá API"),
       el("p", { className: "muted", style: { margin: "4px 0 0" } }, "Dùng để xác thực API REST /v1 khi tích hợp từ hệ thống máy chủ của bạn.")
     ),
     el(
@@ -69,7 +88,7 @@ async function renderApiKeysSection(wrapper) {
         className: "button primary",
         onClick: createApiKey,
       },
-      "+ Tạo khoá API mới"
+      "Tạo khoá API"
     )
   );
 
@@ -84,7 +103,7 @@ async function renderApiKeysSection(wrapper) {
         "tr",
         {},
         el("th", {}, "Tên khoá"),
-        el("th", {}, "Tiền tố (Prefix)"),
+        el("th", {}, "Tiền tố khoá"),
         el("th", {}, "Ngày tạo"),
         el("th", {}, "Sử dụng gần nhất"),
         el("th", {}, "Trạng thái"),
@@ -161,8 +180,8 @@ async function renderApiKeysSection(wrapper) {
           {},
           el("td", {}, el("strong", {}, key.name)),
           el("td", {}, el("code", {}, `${key.prefix}••••••••`)),
-          el("td", { className: "muted" }, formatDate(key.created_at)),
-          el("td", { className: "muted" }, key.last_used_at ? formatDate(key.last_used_at) : "Chưa sử dụng"),
+          el("td", { className: "muted" }, formatShortDate(key.created_at)),
+          el("td", { className: "muted" }, key.last_used_at ? formatShortDate(key.last_used_at) : "Chưa sử dụng"),
           el("td", {}, statusBadge),
           el("td", { style: { textAlign: "right" } }, actionBtn)
         );
@@ -178,7 +197,7 @@ async function renderApiKeysSection(wrapper) {
 
   function createApiKey() {
     promptModal({
-      title: "Tạo khoá API mới",
+      title: "Tạo khoá API",
       message: "Nhập tên gợi nhớ cho khoá API này (ví dụ: Production Server, ERP, CRM):",
       placeholder: "Tên khoá API...",
       confirmText: "Tạo khoá",
@@ -195,6 +214,7 @@ async function renderApiKeysSection(wrapper) {
 
           // Hiển thị Secret một lần duy nhất
           const secretInput = el("input", {
+            id: "api-secret-key-val",
             type: "text",
             readOnly: true,
             value: res.secret,
@@ -202,28 +222,28 @@ async function renderApiKeysSection(wrapper) {
           });
 
           showModal({
-            title: "🔑 Khoá API đã được tạo",
+            title: "Khoá API đã tạo",
             content: el(
               "div",
               {},
               el(
                 "div",
                 { className: "warning-banner" },
-                "⚠️ Hãy lưu lại chuỗi khoá bí mật này ngay bây giờ. Bạn sẽ KHÔNG THỂ XEM LẠI nó sau khi đóng hộp thoại này!"
+                "Hãy lưu lại chuỗi khoá bí mật này ngay bây giờ. Bạn sẽ không thể xem lại sau khi đóng hộp thoại này."
               ),
-              el("label", { style: { display: "block", marginTop: "12px" } }, "Khoá bí mật (API Secret):"),
+              el("label", { htmlFor: "api-secret-key-val", style: { display: "block", marginTop: "12px" } }, "Khoá bí mật (API Secret):"),
               secretInput
             ),
             actions: [
               {
-                label: "📋 Sao chép khoá",
+                label: "Sao chép khoá",
                 primary: true,
                 onClick: async () => {
                   await navigator.clipboard.writeText(res.secret);
-                  toast("Đã sao chép khoá bí mật vào clipboard!", "ok");
+                  toast("Đã sao chép khoá bí mật vào bộ nhớ tạm.", "ok");
                 },
               },
-              { label: "Đã lưu xong, Đóng" },
+              { label: "Đóng" },
             ],
             onClose: () => loadKeys(),
           });
@@ -257,7 +277,7 @@ async function renderWebhooksSection(wrapper) {
         className: "button primary",
         onClick: createWebhook,
       },
-      "+ Thêm Webhook mới"
+      "Thêm webhook"
     )
   );
 
@@ -297,13 +317,13 @@ async function renderWebhooksSection(wrapper) {
   function renderWebhookCard(ep, container) {
     const isAllEvents = ep.events.includes("*");
     const eventsBadges = isAllEvents
-      ? [el("span", { className: "badge badge-completed" }, "Tất cả sự kiện (*)")]
+      ? [el("span", { className: "badge badge-completed" }, "Tất cả sự kiện")]
       : ep.events.map((ev) => el("span", { className: "badge", style: { marginRight: "4px" } }, ev));
 
     const statusBadge = el(
       "span",
       { className: `badge ${ep.enabled ? "badge-completed" : "badge-voided"}` },
-      ep.enabled ? "Đang bật" : "Tắt"
+      ep.enabled ? "Đang bật" : "Đã tắt"
     );
 
     const toggleBtn = el(
@@ -337,16 +357,15 @@ async function renderWebhooksSection(wrapper) {
           testBtn.textContent = "Đang gửi…";
           try {
             await api(`/api/org/webhooks/${ep.id}/test`, { method: "POST" });
-            toast("Đã xếp sự kiện thử nghiệm vào hàng đợi gửi!", "ok");
+            toast("Đã gửi sự kiện thử nghiệm vào hàng đợi.", "ok");
           } catch (err) {
             toast(`Lỗi gửi thử nghiệm: ${err.message}`, "err");
           } finally {
             testBtn.disabled = false;
-            testBtn.textContent = "Gửi thử nghiệm (Test)";
+            testBtn.textContent = "Gửi thử nghiệm";
           }
         },
       },
-      "Gửi thử nghiệm (Test)"
     );
 
     const secretBtn = el(
@@ -364,7 +383,7 @@ async function renderWebhooksSection(wrapper) {
             });
 
             showModal({
-              title: "Khoá bí mật Webhook (Secret)",
+              title: "Khoá bí mật webhook",
               content: el(
                 "div",
                 {},
@@ -373,11 +392,11 @@ async function renderWebhooksSection(wrapper) {
               ),
               actions: [
                 {
-                  label: "📋 Sao chép Secret",
+                  label: "Sao chép secret",
                   primary: true,
                   onClick: async () => {
                     await navigator.clipboard.writeText(detail.secret);
-                    toast("Đã sao chép secret!", "ok");
+                    toast("Đã sao chép secret vào bộ nhớ tạm.", "ok");
                   },
                 },
                 {
@@ -385,14 +404,14 @@ async function renderWebhooksSection(wrapper) {
                   danger: true,
                   onClick: async () => {
                     confirmModal({
-                      title: "Đổi Secret Webhook",
+                      title: "Đổi secret webhook",
                       message: "Bạn có chắc muốn đổi secret mới? Hệ thống nhận cũ sẽ không thể xác thực chữ ký cho đến khi bạn cập nhật.",
-                      confirmText: "Đổi Secret",
+                      confirmText: "Đổi secret",
                       danger: true,
                       onConfirm: async () => {
                         try {
                           const rotated = await api(`/api/org/webhooks/${ep.id}/rotate-secret`, { method: "POST" });
-                          toast("Đã đổi secret mới thành công!", "ok");
+                          toast("Đã đổi secret mới thành công.", "ok");
                           secretInput.value = rotated.secret;
                         } catch (err) {
                           toast(err.message, "err");
@@ -410,7 +429,7 @@ async function renderWebhooksSection(wrapper) {
           }
         },
       },
-      "🔑 Xem Secret"
+      "Xem secret"
     );
 
     const deliveriesBtn = el(
@@ -419,7 +438,7 @@ async function renderWebhooksSection(wrapper) {
         className: "button small",
         onClick: () => viewDeliveries(ep),
       },
-      "Lịch sử gửi (Deliveries)"
+      "Lịch sử gửi"
     );
 
     const deleteBtn = el(
@@ -428,9 +447,9 @@ async function renderWebhooksSection(wrapper) {
         className: "button small danger",
         onClick: () => {
           confirmModal({
-            title: "Xoá Webhook",
+            title: "Xoá webhook",
             message: `Bạn có chắc chắn muốn xoá webhook "${ep.url}"?`,
-            confirmText: "Xoá Webhook",
+            confirmText: "Xoá webhook",
             danger: true,
             onConfirm: async () => {
               try {
@@ -468,12 +487,14 @@ async function renderWebhooksSection(wrapper) {
 
   function createWebhook() {
     const urlInput = el("input", {
+      id: "webhook-url-input",
       type: "url",
       required: true,
       placeholder: "https://api.yourdomain.com/webhooks/websigner",
       style: { width: "100%" },
     });
     const descInput = el("input", {
+      id: "webhook-desc-input",
       type: "text",
       placeholder: "Hệ thống quản lý hợp đồng CRM...",
       style: { width: "100%" },
@@ -482,10 +503,10 @@ async function renderWebhooksSection(wrapper) {
     // Danh sách sự kiện do backend công bố ở /api/config — không tự chép tay.
     const eventsList = state.config?.webhook_events || [];
 
-    const allEventsCheckbox = el("input", { type: "checkbox", checked: true });
+    const allEventsCheckbox = el("input", { id: "webhook-all-events-cb", type: "checkbox", checked: true });
     const eventCheckboxes = eventsList.map((ev) => ({
       name: ev,
-      input: el("input", { type: "checkbox", checked: false, disabled: true }),
+      input: el("input", { id: `webhook-cb-${ev}`, type: "checkbox", checked: false, disabled: true }),
     }));
 
     allEventsCheckbox.addEventListener("change", () => {
@@ -499,19 +520,19 @@ async function renderWebhooksSection(wrapper) {
     const form = el(
       "div",
       {},
-      el("div", { className: "form-group" }, el("label", {}, "URL nhận webhook (POST) *"), urlInput),
-      el("div", { className: "form-group" }, el("label", {}, "Mô tả"), descInput),
+      el("div", { className: "form-group" }, el("label", { htmlFor: "webhook-url-input" }, "URL nhận webhook (POST) *"), urlInput),
+      el("div", { className: "form-group" }, el("label", { htmlFor: "webhook-desc-input" }, "Mô tả"), descInput),
       el("div", { className: "form-group" },
         el("label", {}, "Chọn sự kiện gửi về:"),
-        el("label", { className: "checkbox-label", style: { display: "block", margin: "6px 0" } },
+        el("label", { htmlFor: "webhook-all-events-cb", className: "checkbox-label", style: { display: "block", margin: "6px 0" } },
           allEventsCheckbox,
-          el("strong", { style: { marginLeft: "8px" } }, "Tất cả các sự kiện (*)")
+          el("strong", { style: { marginLeft: "8px" } }, "Tất cả sự kiện")
         ),
         el(
           "div",
           { className: "events-checkbox-grid" },
           ...eventCheckboxes.map(({ name, input }) =>
-            el("label", { className: "checkbox-label", style: { display: "flex", alignItems: "center", gap: "6px" } },
+            el("label", { htmlFor: `webhook-cb-${name}`, className: "checkbox-label", style: { display: "flex", alignItems: "center", gap: "6px" } },
               input,
               el("span", { style: { fontSize: "12px" } }, name)
             )
@@ -521,12 +542,12 @@ async function renderWebhooksSection(wrapper) {
     );
 
     showModal({
-      title: "Thêm Webhook mới",
+      title: "Thêm webhook",
       content: form,
       actions: [
         { label: "Huỷ" },
         {
-          label: "Thêm Webhook",
+          label: "Thêm webhook",
           primary: true,
           onClick: async () => {
             const url = urlInput.value.trim();
@@ -554,12 +575,12 @@ async function renderWebhooksSection(wrapper) {
                 },
               });
 
-              toast("Đã tạo webhook thành công!", "ok");
+              toast("Đã tạo webhook thành công.", "ok");
               loadWebhooks();
 
               // Hiển thị secret
               showModal({
-                title: "🔑 Khoá bí mật của Webhook",
+                title: "Khoá bí mật webhook",
                 content: el(
                   "div",
                   {},
@@ -573,11 +594,11 @@ async function renderWebhooksSection(wrapper) {
                 ),
                 actions: [
                   {
-                    label: "📋 Sao chép Secret",
+                    label: "Sao chép secret",
                     primary: true,
                     onClick: async () => {
                       await navigator.clipboard.writeText(res.secret);
-                      toast("Đã sao chép secret!", "ok");
+                      toast("Đã sao chép secret vào bộ nhớ tạm.", "ok");
                     },
                   },
                   { label: "Đóng" },
@@ -679,7 +700,7 @@ async function renderWebhooksSection(wrapper) {
                 retryBtn.disabled = true;
                 try {
                   await api(`/api/org/webhooks/${ep.id}/deliveries/${deliv.id}/retry`, { method: "POST" });
-                  toast("Đã xếp gửi lại webhook!", "ok");
+                  toast("Đã xếp gửi lại webhook.", "ok");
                   viewDeliveries(ep);
                 } catch (err) {
                   toast(`Không thể gửi lại: ${err.message}`, "err");
@@ -698,7 +719,7 @@ async function renderWebhooksSection(wrapper) {
           el("td", {}, statusBadge),
           el("td", {}, String(deliv.attempts)),
           el("td", {}, deliv.last_status_code ? String(deliv.last_status_code) : "—"),
-          el("td", { className: "muted" }, formatDate(deliv.delivered_at || deliv.created_at)),
+          el("td", { className: "muted" }, formatShortDate(deliv.delivered_at || deliv.created_at)),
           el("td", { style: { textAlign: "right" } }, viewPayloadBtn, retryBtn ? el("span", { style: { marginLeft: "4px" } }, retryBtn) : null)
         );
 
@@ -795,12 +816,12 @@ async function renderEmbedOriginsSection(wrapper) {
         renderOriginsList();
       },
     },
-    "+ Thêm origin"
+    "Thêm origin"
   );
 
   const addRow = el(
     "div",
-    { style: { display: "flex", gap: "8px", marginTop: "12px", alignItems: "center" } },
+    { className: "origin-add-row" },
     inputNewOrigin,
     btnAddOrigin
   );
@@ -825,7 +846,7 @@ async function renderEmbedOriginsSection(wrapper) {
             state.me.org.embed_origins = origins;
           }
           renderOriginsList();
-          toast("Đã lưu danh sách origin nhúng iframe thành công!", "ok");
+          toast("Đã lưu danh sách tên miền nhúng iframe thành công.", "ok");
         } catch (err) {
           showError(err.message || "Lỗi khi lưu danh sách origin");
         } finally {
@@ -853,36 +874,39 @@ async function renderEmbedOriginsSection(wrapper) {
     const list = el("div", {
       style: { display: "flex", flexDirection: "column", gap: "6px" },
     });
-
     origins.forEach((orig, idx) => {
+      const delBtn = el(
+        "button",
+        {
+          type: "button",
+          className: "btn-remove-file",
+          ariaLabel: "Xoá origin",
+          title: "Xoá origin",
+          onClick: () => {
+            showError("");
+            origins.splice(idx, 1);
+            renderOriginsList();
+          },
+        }
+      );
+      const closeSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      closeSvg.setAttribute("width", "14");
+      closeSvg.setAttribute("height", "14");
+      closeSvg.setAttribute("viewBox", "0 0 24 24");
+      closeSvg.setAttribute("fill", "none");
+      closeSvg.setAttribute("stroke", "currentColor");
+      closeSvg.setAttribute("stroke-width", "2");
+      closeSvg.setAttribute("stroke-linecap", "round");
+      closeSvg.setAttribute("stroke-linejoin", "round");
+      closeSvg.setAttribute("aria-hidden", "true");
+      closeSvg.innerHTML = '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>';
+      delBtn.appendChild(closeSvg);
+
       const row = el(
         "div",
-        {
-          style: {
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "8px 12px",
-            background: "rgba(255, 255, 255, 0.03)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-          },
-        },
-        el("code", { style: { color: "var(--fg)", fontSize: "13px" } }, orig),
-        el(
-          "button",
-          {
-            type: "button",
-            className: "btn-icon-del",
-            title: "Xoá origin",
-            onClick: () => {
-              showError("");
-              origins.splice(idx, 1);
-              renderOriginsList();
-            },
-          },
-          "✕"
-        )
+        { className: "origin-row" },
+        el("code", {}, orig),
+        delBtn
       );
       list.appendChild(row);
     });
@@ -961,10 +985,10 @@ window.addEventListener("message", (event) => {
 });`;
 
   function createSnippetBox(title, codeText) {
-    const box = el("div", { style: { marginTop: "16px" } });
+    const box = el("div", { className: "code-snippet-box" });
     const top = el(
       "div",
-      { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
+      { className: "code-snippet-header" },
       el("strong", { style: { fontSize: "13px" } }, title),
       el(
         "button",
@@ -974,7 +998,7 @@ window.addEventListener("message", (event) => {
           onClick: async () => {
             try {
               await navigator.clipboard.writeText(codeText);
-              toast("Đã sao chép đoạn mã!", "ok");
+              toast("Đã sao chép đoạn mã.", "ok");
             } catch {
               promptModal({
                 title: "Sao chép đoạn mã",
@@ -984,7 +1008,7 @@ window.addEventListener("message", (event) => {
             }
           },
         },
-        "📋 Sao chép"
+        "Sao chép"
       )
     );
     const pre = el("pre", { className: "code-block" }, codeText);
@@ -1072,14 +1096,14 @@ def verify_signature(secret: str, header_value: str, raw_body: bytes) -> bool:
       "div",
       { className: "section-header" },
       el("div", {},
-        el("h3", { style: { margin: 0 } }, "Bắt đầu nhanh (Quick Start)"),
+        el("h3", { style: { margin: 0 } }, "Bắt đầu nhanh"),
         el("p", { className: "muted", style: { margin: "4px 0 0" } }, "Các ví dụ lệnh gọi API và xác thực webhook tiêu chuẩn.")
       ),
       el(
         "div",
         {},
-        el("a", { href: "/docs", target: "_blank", rel: "noopener", className: "button", style: { marginRight: "8px" } }, "📖 Swagger API Docs"),
-        el("a", { href: "/redoc", target: "_blank", rel: "noopener", className: "button" }, "ReDoc")
+        el("a", { href: "/docs", target: "_blank", rel: "noopener", className: "button", style: { marginRight: "8px" } }, "Tài liệu Swagger"),
+        el("a", { href: "/redoc", target: "_blank", rel: "noopener", className: "button" }, "Tài liệu ReDoc")
       )
     ),
 
@@ -1089,7 +1113,7 @@ def verify_signature(secret: str, header_value: str, raw_body: bytes) -> bool:
     el("h4", { style: { marginTop: "20px" } }, "2. Lấy thông tin tài liệu và liên kết ký:"),
     el("pre", { className: "code-block" }, getDocSnippet),
 
-    el("h4", { style: { marginTop: "20px" } }, "3. Xác thực chữ ký Webhook (HMAC-SHA256):"),
+    el("h4", { style: { marginTop: "20px" } }, "3. Xác thực chữ ký webhook (HMAC-SHA256):"),
     el("p", { className: "muted" }, "Mỗi webhook được gửi kèm header WebSigner-Signature: t=<timestamp>,v1=<hex_hmac>. Chữ ký được tính từ ${t}.${rawBody}."),
     el("pre", { className: "code-block" }, webhookVerifyNodeSnippet),
     el("pre", { className: "code-block", style: { marginTop: "12px" } }, webhookVerifyPythonSnippet)

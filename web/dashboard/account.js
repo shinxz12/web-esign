@@ -3,7 +3,28 @@
  * Thông tin cá nhân, đổi mật khẩu, và đổi tên tổ chức (Admin/Owner).
  */
 
-import { api, el, formatDate, ROLE_LABELS, state, toast } from "./api.js";
+import { api, el, ROLE_LABELS, state, toast } from "./api.js";
+
+function formatShortDate(isoString, includeTime = false) {
+  if (!isoString) return "—";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const parts = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      ...(includeTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}),
+    }).formatToParts(d);
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    if (!includeTime) {
+      return `${map.day}/${map.month}/${map.year}`;
+    }
+    return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}`;
+  } catch {
+    return isoString;
+  }
+}
 
 export function renderAccount(container) {
   container.replaceChildren();
@@ -12,7 +33,7 @@ export function renderAccount(container) {
   const org = state.me?.org;
   const isAdminOrOwner = user?.role === "owner" || user?.role === "admin";
 
-  const heading = el("h2", { className: "page-title" }, "Tài khoản & Thiết lập");
+  const heading = el("h2", { className: "page-title" }, "Tài khoản và thiết lập");
   const subtext = el(
     "p",
     { className: "muted" },
@@ -30,16 +51,16 @@ export function renderAccount(container) {
     el(
       "div",
       { className: "profile-details-grid" },
-      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Họ và tên:"), el("strong", {}, user?.name || "—")),
-      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Email tài khoản:"), el("span", {}, user?.email || "—")),
+      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Họ và tên"), el("strong", {}, user?.name || "—")),
+      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Email tài khoản"), el("span", {}, user?.email || "—")),
       el(
         "div",
         { className: "profile-row" },
-        el("span", { className: "muted" }, "Vai trò:"),
+        el("span", { className: "muted" }, "Vai trò"),
         el("span", { className: `badge ${user?.role === "owner" ? "badge-owner" : user?.role === "admin" ? "badge-completed" : "badge-draft"}` }, ROLE_LABELS[user?.role] || user?.role)
       ),
-      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Ngày tạo:"), el("span", {}, formatDate(user?.created_at))),
-      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Tổ chức:"), el("strong", {}, org?.name || "—"))
+      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Ngày tạo"), el("span", {}, formatShortDate(user?.created_at, false))),
+      el("div", { className: "profile-row" }, el("span", { className: "muted" }, "Tổ chức"), el("strong", {}, org?.name || "—"))
     )
   );
 
@@ -48,12 +69,14 @@ export function renderAccount(container) {
   // 2. Đổi tên tổ chức (Admin / Owner only)
   if (isAdminOrOwner) {
     const orgNameInput = el("input", {
+      id: "account-org-name",
       type: "text",
       required: true,
       value: org?.name || "",
+      autocomplete: "organization",
       style: { maxWidth: "400px" },
     });
-    const saveOrgBtn = el("button", { type: "submit", className: "primary" }, "Lưu tên tổ chức");
+    const saveOrgBtn = el("button", { type: "submit", className: "primary" }, "Lưu thay đổi");
     const orgErrorMsg = el("div", { className: "form-error", hidden: true });
 
     const orgForm = el(
@@ -78,8 +101,7 @@ export function renderAccount(container) {
               body: { name: newName },
             });
             state.me.org = updatedOrg;
-            toast("Đã đổi tên tổ chức thành công!", "ok");
-
+            toast("Đã cập nhật tên tổ chức.", "ok");
             // Cập nhật tên tổ chức trên topbar
             const topbarOrg = document.getElementById("topbar-org-name");
             if (topbarOrg) topbarOrg.textContent = updatedOrg.name;
@@ -88,11 +110,11 @@ export function renderAccount(container) {
             orgErrorMsg.hidden = false;
           } finally {
             saveOrgBtn.disabled = false;
-            saveOrgBtn.textContent = "Lưu tên tổ chức";
+            saveOrgBtn.textContent = "Lưu thay đổi";
           }
         },
       },
-      el("div", { className: "form-group" }, el("label", {}, "Tên doanh nghiệp / Tổ chức"), orgNameInput),
+      el("div", { className: "form-group" }, el("label", { htmlFor: "account-org-name" }, "Tên doanh nghiệp hoặc tổ chức"), orgNameInput),
       orgErrorMsg,
       el("div", { style: { marginTop: "12px" } }, saveOrgBtn)
     );
@@ -110,6 +132,7 @@ export function renderAccount(container) {
 
   // 3. Đổi mật khẩu
   const currentPasswordInput = el("input", {
+    id: "account-current-password",
     type: "password",
     required: true,
     placeholder: "Nhập mật khẩu hiện tại",
@@ -117,6 +140,7 @@ export function renderAccount(container) {
     autocomplete: "current-password",
   });
   const newPasswordInput = el("input", {
+    id: "account-new-password",
     type: "password",
     required: true,
     placeholder: "Tối thiểu 10 ký tự",
@@ -124,6 +148,7 @@ export function renderAccount(container) {
     autocomplete: "new-password",
   });
   const confirmPasswordInput = el("input", {
+    id: "account-confirm-password",
     type: "password",
     required: true,
     placeholder: "Nhập lại mật khẩu mới",
@@ -164,7 +189,7 @@ export function renderAccount(container) {
               new_password: newPasswordInput.value,
             },
           });
-          toast("Đã đổi mật khẩu thành công! Vui lòng đăng nhập lại.", "ok", 5000);
+          toast("Đã đổi mật khẩu thành công. Vui lòng đăng nhập lại.", "ok", 5000);
           state.me = null;
           location.hash = "#/login";
         } catch (err) {
@@ -175,9 +200,15 @@ export function renderAccount(container) {
         }
       },
     },
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu hiện tại"), currentPasswordInput),
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu mới (tối thiểu 10 ký tự)"), newPasswordInput),
-    el("div", { className: "form-group" }, el("label", {}, "Xác nhận mật khẩu mới"), confirmPasswordInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "account-current-password" }, "Mật khẩu hiện tại"), currentPasswordInput),
+    el(
+      "div",
+      { className: "form-group" },
+      el("label", { htmlFor: "account-new-password" }, "Mật khẩu mới"),
+      newPasswordInput,
+      el("p", { className: "form-hint" }, "Mật khẩu có độ dài từ 10 ký tự trở lên.")
+    ),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "account-confirm-password" }, "Xác nhận mật khẩu mới"), confirmPasswordInput),
     passErrorMsg,
     el("div", { style: { marginTop: "12px" } }, changePassBtn)
   );
@@ -185,7 +216,7 @@ export function renderAccount(container) {
   const passCard = el(
     "div",
     { className: "card content-card", style: { marginTop: "24px" } },
-    el("h3", { style: { marginTop: 0 } }, "Bảo mật & Mật khẩu"),
+    el("h3", { style: { marginTop: 0 } }, "Bảo mật và mật khẩu"),
     el("p", { className: "muted" }, "Sau khi đổi mật khẩu, mọi phiên đăng nhập trên các thiết bị khác sẽ tự động đăng xuất."),
     passForm
   );

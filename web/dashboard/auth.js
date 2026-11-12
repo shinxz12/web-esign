@@ -11,12 +11,15 @@ export function renderLogin(container) {
   container.replaceChildren();
 
   const emailInput = el("input", {
+    id: "login-email",
     type: "email",
     required: true,
     placeholder: "ten@congty.vn",
     autocomplete: "username",
+    inputMode: "email",
   });
   const passwordInput = el("input", {
+    id: "login-password",
     type: "password",
     required: true,
     placeholder: "••••••••",
@@ -45,7 +48,7 @@ export function renderLogin(container) {
           });
           state.me = res;
           state.csrfToken = res.csrf_token;
-          toast(`Xin chào, ${res.user.name}!`, "ok");
+          toast(`Xin chào, ${res.user.name}.`, "ok");
           location.hash = "#/documents";
         } catch (err) {
           errorMsg.textContent = err.message;
@@ -56,8 +59,8 @@ export function renderLogin(container) {
         }
       },
     },
-    el("div", { className: "form-group" }, el("label", {}, "Email công việc"), emailInput),
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu"), passwordInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "login-email" }, "Email công việc"), emailInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "login-password" }, "Mật khẩu"), passwordInput),
     errorMsg,
     submitBtn
   );
@@ -85,8 +88,8 @@ export function renderLogin(container) {
     "div",
     { className: "auth-card" },
     el("div", { className: "auth-header" },
-      el("h2", {}, "Đăng nhập Web Signer"),
-      el("p", { className: "muted" }, "Nền tảng ký hợp đồng điện tử doanh nghiệp")
+      el("h2", {}, "Đăng nhập"),
+      el("p", { className: "muted" }, "Đăng nhập để quản lý và ký tài liệu")
     ),
     form,
     links
@@ -111,8 +114,8 @@ export function renderRegister(container) {
           "div",
           { className: "auth-card" },
           el("h2", {}, "Đăng ký tài khoản"),
-          el("p", { className: "muted" }, "Máy chủ này hiện không mở đăng ký tự do."),
-          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Quay lại Đăng nhập"))
+          el("p", { className: "muted" }, "Hệ thống hiện không mở đăng ký tự do."),
+          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Quay lại trang đăng nhập"))
         )
       )
     );
@@ -120,23 +123,29 @@ export function renderRegister(container) {
   }
 
   const orgInput = el("input", {
+    id: "register-org",
     type: "text",
     required: true,
     placeholder: "Công ty Cổ phần ABC",
+    autocomplete: "organization",
   });
   const nameInput = el("input", {
+    id: "register-name",
     type: "text",
     required: true,
     placeholder: "Nguyễn Văn A",
     autocomplete: "name",
   });
   const emailInput = el("input", {
+    id: "register-email",
     type: "email",
     required: true,
     placeholder: "a.nguyen@congty.vn",
     autocomplete: "email",
+    inputMode: "email",
   });
   const passwordInput = el("input", {
+    id: "register-password",
     type: "password",
     required: true,
     placeholder: "Tối thiểu 10 ký tự",
@@ -174,7 +183,7 @@ export function renderRegister(container) {
           });
           state.me = res;
           state.csrfToken = res.csrf_token;
-          toast("Đăng ký tổ chức thành công!", "ok");
+          toast("Đăng ký tài khoản tổ chức thành công.", "ok");
           location.hash = "#/documents";
         } catch (err) {
           errorMsg.textContent = err.message;
@@ -185,10 +194,10 @@ export function renderRegister(container) {
         }
       },
     },
-    el("div", { className: "form-group" }, el("label", {}, "Tên doanh nghiệp / Tổ chức"), orgInput),
-    el("div", { className: "form-group" }, el("label", {}, "Họ và tên của bạn"), nameInput),
-    el("div", { className: "form-group" }, el("label", {}, "Email công việc"), emailInput),
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu"), passwordInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "register-org" }, "Tên doanh nghiệp hoặc tổ chức"), orgInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "register-name" }, "Họ và tên"), nameInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "register-email" }, "Email công việc"), emailInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "register-password" }, "Mật khẩu"), passwordInput),
     errorMsg,
     submitBtn
   );
@@ -197,8 +206,8 @@ export function renderRegister(container) {
     "div",
     { className: "auth-card" },
     el("div", { className: "auth-header" },
-      el("h2", {}, "Đăng ký Web Signer"),
-      el("p", { className: "muted" }, "Khởi tạo tổ chức mới với gói Miễn phí")
+      el("h2", {}, "Đăng ký tài khoản"),
+      el("p", { className: "muted" }, "Tạo tài khoản tổ chức mới để bắt đầu ký tài liệu")
     ),
     form,
     el(
@@ -228,7 +237,7 @@ export function renderForgot(container) {
           { className: "auth-card" },
           el("h2", {}, "Quên mật khẩu"),
           el("p", { className: "muted" }, "Chức năng gửi email chưa được kích hoạt trên hệ thống."),
-          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Quay lại Đăng nhập"))
+          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Quay lại trang đăng nhập"))
         )
       )
     );
@@ -236,9 +245,12 @@ export function renderForgot(container) {
   }
 
   const emailInput = el("input", {
+    id: "forgot-email",
     type: "email",
     required: true,
     placeholder: "ten@congty.vn",
+    autocomplete: "email",
+    inputMode: "email",
   });
   const submitBtn = el("button", { type: "submit", className: "primary full-width" }, "Gửi liên kết khôi phục");
   const errorMsg = el("div", { className: "form-error", hidden: true });
@@ -274,7 +286,7 @@ export function renderForgot(container) {
         }
       },
     },
-    el("div", { className: "form-group" }, el("label", {}, "Email đã đăng ký"), emailInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "forgot-email" }, "Email tài khoản"), emailInput),
     errorMsg,
     successMsg,
     submitBtn
@@ -291,7 +303,7 @@ export function renderForgot(container) {
     el(
       "div",
       { className: "auth-links" },
-      el("p", {}, el("a", { href: "#/login" }, "← Quay lại Đăng nhập"))
+      el("p", {}, el("a", { href: "#/login" }, "Quay lại trang đăng nhập"))
     )
   );
 
@@ -315,8 +327,8 @@ export function renderReset(container, query = {}) {
           "div",
           { className: "auth-card" },
           el("h2", {}, "Đặt lại mật khẩu"),
-          el("p", { className: "form-error" }, "Liên kết không hợp lệ hoặc thiếu mã xác thực (token)."),
-          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang Đăng nhập"))
+          el("p", { className: "form-error" }, "Liên kết không hợp lệ hoặc thiếu mã xác thực."),
+          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang đăng nhập"))
         )
       )
     );
@@ -324,14 +336,18 @@ export function renderReset(container, query = {}) {
   }
 
   const passwordInput = el("input", {
+    id: "reset-password",
     type: "password",
     required: true,
     placeholder: "Tối thiểu 10 ký tự",
+    autocomplete: "new-password",
   });
   const confirmInput = el("input", {
+    id: "reset-confirm",
     type: "password",
     required: true,
     placeholder: "Nhập lại mật khẩu mới",
+    autocomplete: "new-password",
   });
   const submitBtn = el("button", { type: "submit", className: "primary full-width" }, "Cập nhật mật khẩu");
   const errorMsg = el("div", { className: "form-error", hidden: true });
@@ -367,7 +383,7 @@ export function renderReset(container, query = {}) {
               password: passwordInput.value,
             },
           });
-          toast("Đặt lại mật khẩu thành công! Vui lòng đăng nhập.", "ok");
+          toast("Đã đặt lại mật khẩu thành công. Vui lòng đăng nhập lại.", "ok");
           location.hash = "#/login";
         } catch (err) {
           errorMsg.textContent = err.message;
@@ -378,8 +394,8 @@ export function renderReset(container, query = {}) {
         }
       },
     },
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu mới"), passwordInput),
-    el("div", { className: "form-group" }, el("label", {}, "Xác nhận mật khẩu mới"), confirmInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "reset-password" }, "Mật khẩu mới"), passwordInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "reset-confirm" }, "Xác nhận mật khẩu mới"), confirmInput),
     errorMsg,
     submitBtn
   );
@@ -389,7 +405,7 @@ export function renderReset(container, query = {}) {
     { className: "auth-card" },
     el("div", { className: "auth-header" },
       el("h2", {}, "Đặt lại mật khẩu"),
-      el("p", { className: "muted" }, "Tạo mật khẩu an toàn mới cho tài khoản của bạn")
+      el("p", { className: "muted" }, "Thiết lập mật khẩu mới cho tài khoản của bạn")
     ),
     form
   );
@@ -415,7 +431,7 @@ export async function renderInvite(container, query = {}) {
           { className: "auth-card" },
           el("h2", {}, "Lời mời tham gia"),
           el("p", { className: "form-error" }, "Liên kết không hợp lệ hoặc thiếu mã lời mời."),
-          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang Đăng nhập"))
+          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang đăng nhập"))
         )
       )
     );
@@ -442,7 +458,7 @@ export async function renderInvite(container, query = {}) {
           { className: "auth-card" },
           el("h2", {}, "Lời mời tham gia"),
           el("p", { className: "form-error" }, err.message),
-          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang Đăng nhập"))
+          el("p", {}, el("a", { href: "#/login", className: "button primary" }, "Đến trang đăng nhập"))
         )
       )
     );
@@ -450,20 +466,26 @@ export async function renderInvite(container, query = {}) {
   }
 
   const nameInput = el("input", {
+    id: "invite-name",
     type: "text",
     required: true,
     value: inviteInfo.name || "",
     placeholder: "Họ và tên của bạn",
+    autocomplete: "name",
   });
   const passwordInput = el("input", {
+    id: "invite-password",
     type: "password",
     required: true,
     placeholder: "Tối thiểu 10 ký tự",
+    autocomplete: "new-password",
   });
   const confirmInput = el("input", {
+    id: "invite-confirm",
     type: "password",
     required: true,
-    placeholder: "Nhập lại mật khẩu",
+    placeholder: "Nhập lại mật khẩu mới",
+    autocomplete: "new-password",
   });
   const submitBtn = el("button", { type: "submit", className: "primary full-width" }, "Tham gia tổ chức");
   const errorMsg = el("div", { className: "form-error", hidden: true });
@@ -502,7 +524,7 @@ export async function renderInvite(container, query = {}) {
           });
           state.me = res;
           state.csrfToken = res.csrf_token;
-          toast("Chào mừng bạn gia nhập tổ chức!", "ok");
+          toast("Chào mừng bạn gia nhập tổ chức.", "ok");
           location.hash = "#/documents";
         } catch (err) {
           errorMsg.textContent = err.message;
@@ -520,9 +542,9 @@ export async function renderInvite(container, query = {}) {
       el("div", { className: "invite-org-name" }, inviteInfo.org_name),
       el("div", { className: "muted" }, `Email tài khoản: ${inviteInfo.email}`)
     ),
-    el("div", { className: "form-group" }, el("label", {}, "Họ và tên"), nameInput),
-    el("div", { className: "form-group" }, el("label", {}, "Mật khẩu mới"), passwordInput),
-    el("div", { className: "form-group" }, el("label", {}, "Xác nhận mật khẩu"), confirmInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "invite-name" }, "Họ và tên"), nameInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "invite-password" }, "Mật khẩu mới"), passwordInput),
+    el("div", { className: "form-group" }, el("label", { htmlFor: "invite-confirm" }, "Xác nhận mật khẩu mới"), confirmInput),
     errorMsg,
     submitBtn
   );

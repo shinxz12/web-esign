@@ -14,24 +14,24 @@
         <span class="badge" id="doc-status" hidden></span>
       </div>
       <div class="topbar-actions">
-        <button id="btn-verify" disabled>Xác thực</button>
-        <a id="btn-download" class="button" hidden>⤓ Tải bản đã ký</a>
+        <button type="button" id="btn-verify" disabled>Kiểm tra chữ ký</button>
+        <a id="btn-download" class="button" hidden>Tải bản đã ký</a>
       </div>
     </header>
 
     <main>
       <section class="viewer" id="viewer">
         <div class="viewer-bar">
-          <button id="btn-place" class="primary" disabled hidden>
-            ✎ Đặt chữ ký
+          <button type="button" id="btn-place" class="primary" disabled hidden>
+            Đặt ô ký
           </button>
-          <button id="btn-clear-box" hidden>Bỏ ô ký</button>
+          <button type="button" id="btn-clear-box" hidden>Bỏ ô ký</button>
           <span class="bar-gap"></span>
           <div class="zoom">
-            <button id="zoom-out" title="Thu nhỏ (Ctrl −)">−</button>
+            <button type="button" id="zoom-out" title="Thu nhỏ (Ctrl −)" aria-label="Thu nhỏ">−</button>
             <span id="zoom-level">100%</span>
-            <button id="zoom-in" title="Phóng to (Ctrl +)">+</button>
-            <button id="zoom-fit" title="Vừa bề ngang">Vừa khung</button>
+            <button type="button" id="zoom-in" title="Phóng to (Ctrl +)" aria-label="Phóng to">+</button>
+            <button type="button" id="zoom-fit" title="Vừa bề ngang" aria-label="Phóng to vừa chiều ngang trang">Vừa khung</button>
           </div>
           <span id="page-info" class="page-info">–</span>
         </div>
@@ -39,183 +39,208 @@
         <div class="pages" id="pages"></div>
 
         <div class="empty" id="empty-state">
-          <div class="empty-icon">📄</div>
+          <svg class="empty-icon" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
           <p id="empty-text">Đang tải tài liệu…</p>
         </div>
 
         <div class="place-hint" id="place-hint" hidden>
-          Bấm vào trang để đặt ô ký · kéo để chỉnh vị trí · <kbd>Esc</kbd> để huỷ
+          Bấm vào trang để đặt ô ký, sau đó kéo để chỉnh vị trí. Nhấn <kbd>Esc</kbd> để huỷ.
         </div>
       </section>
 
       <aside class="panel">
+        <div class="card turn-banner" id="turn-card" hidden>
+          <div id="turn-info" class="status"></div>
+        </div>
+
         <section class="card" id="doc-info-card">
-          <h3 id="doc-card-title">Tài liệu</h3>
+          <h3 id="doc-card-title">Thông tin tài liệu</h3>
           <div class="doc-meta-item" id="doc-org-row" hidden>
             <span class="meta-label">Tổ chức gửi:</span>
             <span class="meta-val" id="doc-org-name"></span>
           </div>
           <div class="doc-msg-box" id="doc-msg-box" hidden>
-            <span class="meta-label">Lời nhắn từ người gửi:</span>
+            <span class="meta-label">Lời nhắn từ người gửi</span>
             <p class="doc-msg-text" id="doc-msg-text"></p>
           </div>
           <div class="recipients-section">
-            <div class="recipients-header">Danh sách người nhận</div>
+            <div class="recipients-header">Người nhận tài liệu</div>
             <div id="recipients-list" class="recipients-list"></div>
           </div>
-        </section>
-
-        <section class="card" id="turn-card">
-          <h3>Lượt của bạn</h3>
-          <div id="turn-info" class="status"></div>
         </section>
 
         <section class="card" id="approver-card" hidden>
           <h3>Phê duyệt tài liệu</h3>
           <p class="hint">Xem kỹ nội dung tài liệu trước khi duyệt hoặc từ chối.</p>
           <div class="action-buttons">
-            <button id="btn-approve" class="primary wide">✓ Duyệt tài liệu</button>
-            <button id="btn-decline-approver" class="danger wide">✕ Từ chối</button>
+            <button type="button" id="btn-approve" class="primary wide">Duyệt tài liệu</button>
+            <button type="button" id="btn-decline-approver" class="button danger link">Từ chối duyệt</button>
           </div>
           <div id="approver-status" class="status"></div>
         </section>
 
         <section class="card step" id="step-agent" hidden>
-          <h3><span class="num">1</span> Agent trên máy này</h3>
+          <h3><span class="num">1</span> Kết nối ứng dụng ký số</h3>
           <div id="agent-status" class="status"></div>
+          <p class="hint" id="agent-instruction">
+            Mở ứng dụng <strong>Web Signer Agent</strong> trên máy tính cắm USB token rồi bấm <strong>Kích hoạt trình duyệt</strong>.
+          </p>
           <div id="device-info" class="status muted"></div>
-          <button id="btn-forget-device" hidden>Quên máy này</button>
+          <button type="button" id="btn-forget-device" class="button link" hidden>Quên kết nối máy này</button>
 
           <details id="manual-pair">
-            <summary>Trình duyệt chưa kích hoạt? Dùng mã ghép cặp</summary>
+            <summary>Nhập mã ghép cặp 6 số</summary>
             <p id="iframe-pair-hint" class="hint" style="color: var(--accent); margin-bottom: 8px;" hidden>
-              Trang đang mở trong khung nhúng (iframe) — trình duyệt thường chặn cookie bên thứ ba, vui lòng nhập mã ghép cặp từ agent để ký.
+              Trang đang mở trong khung nhúng (iframe) — vui lòng nhập mã ghép cặp từ ứng dụng để kết nối.
             </p>
             <p class="hint">
-              Chạy <code>agent.py --activate-browser</code> trên máy cắm token
-              để kích hoạt trình duyệt này, hoặc nhập mã 6 số agent in ra.
+              Mã 6 số hiển thị trong ô “Nhật ký” của ứng dụng Web Signer Agent.
             </p>
-            <div class="row">
-              <input
-                id="agent-code"
-                inputmode="numeric"
-                maxlength="6"
-                placeholder="Mã 6 số"
-              />
-              <button id="btn-connect">Kết nối</button>
+            <div class="form-group">
+              <label for="agent-code">Mã ghép cặp</label>
+              <div class="row">
+                <input
+                  id="agent-code"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  pattern="\d{6}"
+                  maxlength="6"
+                  placeholder="Ví dụ: 123456"
+                  aria-label="Mã ghép cặp 6 số từ ứng dụng Web Signer Agent"
+                />
+                <button type="button" id="btn-connect">Kết nối</button>
+              </div>
             </div>
           </details>
         </section>
 
         <section class="card step" id="step-handwrite" hidden>
-          <h3 id="step-handwrite-title"><span class="num">1</span> Vẽ chữ ký tay</h3>
+          <h3 id="step-handwrite-title"><span class="num">1</span> Chữ ký tay</h3>
+          <p class="hint">Ký tên trực tiếp vào khung dưới đây hoặc tải lên tệp ảnh chữ ký sẵn có.</p>
           <div class="sig-pad-wrapper">
-            <canvas id="sig-pad" class="sig-pad"></canvas>
-            <div id="sig-pad-placeholder" class="sig-pad-placeholder">Ký tên vào đây bằng chuột, bút hoặc ngón tay</div>
+            <canvas id="sig-pad" class="sig-pad" role="img" aria-label="Khung vẽ chữ ký tay"></canvas>
+            <div id="sig-pad-placeholder" class="sig-pad-placeholder">Ký tên vào đây bằng chuột, bút cảm ứng hoặc ngón tay</div>
           </div>
           <div class="sig-pad-actions">
-            <button type="button" id="btn-pad-clear" class="button">Xoá</button>
-            <label class="button sig-upload-btn">
-              <input type="file" id="sig-upload-input" accept="image/png, image/jpeg" hidden />
-              Tải ảnh chữ ký
-            </label>
+            <button type="button" id="btn-pad-clear" class="button">Xoá chữ ký</button>
+            <input type="file" id="sig-upload-input" accept="image/png, image/jpeg" class="sr-only" />
+            <label for="sig-upload-input" class="button sig-upload-btn">Tải ảnh chữ ký</label>
           </div>
           <div id="pad-status" class="status muted"></div>
         </section>
 
         <section class="card step" id="step-cert" hidden>
-          <h3><span class="num">2</span> Chọn chứng thư</h3>
+          <h3><span class="num">2</span> Chọn chứng thư số</h3>
+          <p class="hint">Chữ ký số trong USB token của bạn.</p>
           <div id="cert-list" class="cert-list">
-            <p class="hint">Chưa kết nối agent.</p>
+            <p class="hint">Chưa kết nối ứng dụng ký số.</p>
           </div>
         </section>
 
         <section class="card step" id="step-place" hidden>
-          <h3 id="step-place-title"><span class="num" id="step-place-num">3</span> <span id="step-place-text">Vị trí &amp; hình chữ ký</span></h3>
+          <h3 id="step-place-title"><span class="num" id="step-place-num">3</span> <span id="step-place-text">Vị trí &amp; hình thức chữ ký</span></h3>
 
           <div id="field-fixed-notice" class="hint" hidden>
             Vị trí ô ký đã được chỉ định sẵn trên tài liệu.
           </div>
 
           <div id="size-control-group">
-            <label for="sign-size">Cỡ ô ký</label>
+            <label for="sign-size">Kích thước ô ký</label>
             <select id="sign-size">
-              <option value="nho">Nhỏ — 140 × 76 pt</option>
-              <option value="chuan" selected>Chuẩn — 165 × 90 pt</option>
-              <option value="lon">Lớn — 190 × 104 pt</option>
-              <option value="rong">Rộng — 220 × 120 pt</option>
+              <option value="nho">Nhỏ (140 × 76 pt)</option>
+              <option value="chuan" selected>Chuẩn (165 × 90 pt)</option>
+              <option value="lon">Lớn (190 × 104 pt)</option>
+              <option value="rong">Rộng (220 × 120 pt)</option>
             </select>
           </div>
 
-          <div id="digital-stamp-options">
-            <label for="sign-color">Màu chữ</label>
-            <div class="row">
-              <select id="sign-color">
-                <option value="xanh-duong">Xanh dương</option>
-                <option value="xanh-la">Xanh lá</option>
-                <option value="do">Đỏ</option>
-                <option value="den">Đen</option>
-              </select>
-              <label class="checkbox" title="Vẽ viền quanh ô ký">
-                <input type="checkbox" id="sign-border" />
-                Viền
-              </label>
-            </div>
-
-            <label class="checkbox">
-              <input type="checkbox" id="sign-check" checked />
-              Dấu tích chìm
-            </label>
-
-            <label>Logo / con dấu</label>
-            <div class="row">
-              <label class="button logo-pick">
-                <input type="file" id="logo-input" accept="image/*" hidden />
-                Chọn ảnh
-              </label>
-              <button id="btn-logo-clear">Bỏ logo</button>
-            </div>
-            <div id="logo-status" class="status muted"></div>
-            <label>Xem trước hình chữ ký</label>
-            <div class="preview-stage" id="preview-stage"></div>
+          <div class="preview-group" id="preview-stage-wrap">
+            <label id="preview-stage-label" for="preview-stage">Xem trước hình chữ ký</label>
+            <div class="preview-stage" id="preview-stage" role="region" aria-labelledby="preview-stage-label"></div>
           </div>
+
+          <details class="appearance-details" id="appearance-details">
+            <summary>Tuỳ chỉnh hình chữ ký</summary>
+            <div id="digital-stamp-options" class="appearance-body">
+              <div class="form-group">
+                <label for="sign-color">Màu mực</label>
+                <select id="sign-color">
+                  <option value="xanh-duong">Xanh dương</option>
+                  <option value="xanh-la">Xanh lá</option>
+                  <option value="do">Đỏ</option>
+                  <option value="den">Đen</option>
+                </select>
+              </div>
+
+              <div class="checkbox-options">
+                <label class="checkbox" for="sign-border">
+                  <input type="checkbox" id="sign-border" />
+                  Vẽ viền quanh ô ký
+                </label>
+                <label class="checkbox" for="sign-check">
+                  <input type="checkbox" id="sign-check" checked />
+                  Dấu tích xanh chìm
+                </label>
+              </div>
+
+              <div class="form-group">
+                <label for="logo-input">Logo hoặc con dấu</label>
+                <div class="row">
+                  <input type="file" id="logo-input" accept="image/*" class="sr-only" />
+                  <label for="logo-input" class="button logo-pick">Chọn ảnh</label>
+                  <button type="button" id="btn-logo-clear">Bỏ ảnh</button>
+                </div>
+                <div id="logo-status" class="status muted"></div>
+              </div>
+            </div>
+          </details>
+
           <div id="box-info" class="status muted"></div>
         </section>
 
         <section class="card sticky-sign" id="signer-action-card" hidden>
-          <button id="btn-sign" class="primary wide" disabled>Ký số</button>
-          <button id="btn-handwrite" class="primary wide" hidden disabled>Ký tay</button>
-          <button id="btn-decline-signer" class="danger wide" style="margin-top: 6px;">✕ Từ chối ký</button>
+          <div class="action-buttons">
+            <button type="button" id="btn-sign" class="primary wide" disabled>Ký số tài liệu</button>
+            <button type="button" id="btn-handwrite" class="primary wide" hidden disabled>Ký tay tài liệu</button>
+            <button type="button" id="btn-decline-signer" class="button danger link">Từ chối ký tài liệu</button>
+          </div>
           <div id="sign-status" class="status"></div>
-          <div id="profile-hint" class="status muted"></div>
+          <div id="profile-hint" class="status muted" hidden></div>
         </section>
 
         <section class="card" id="verify-card" hidden>
-          <h3>Kết quả xác thực</h3>
+          <h3>Kết quả kiểm tra chữ ký</h3>
           <div id="verify-result"></div>
         </section>
       </aside>
     </main>
 
-    <dialog id="decline-dialog" class="dialog">
+    <dialog id="decline-dialog" class="dialog" aria-labelledby="decline-dialog-title" aria-modal="true">
       <form id="decline-form" method="dialog">
-        <h3>Từ chối tài liệu</h3>
-        <p class="hint">Vui lòng nhập lý do từ chối (bắt buộc):</p>
-        <textarea
-          id="decline-reason"
-          rows="3"
-          required
-          placeholder="Nhập lý do từ chối..."
-        ></textarea>
+        <h3 id="decline-dialog-title">Từ chối tài liệu</h3>
+        <p class="hint">Vui lòng cho người gửi biết lý do bạn không thể ký hoặc duyệt tài liệu này.</p>
+        <div class="form-group">
+          <label for="decline-reason">Lý do từ chối (bắt buộc)</label>
+          <textarea
+            id="decline-reason"
+            rows="3"
+            required
+            placeholder="Nhập lý do từ chối tài liệu…"
+          ></textarea>
+        </div>
         <div id="decline-error" class="status err" hidden></div>
         <div class="modal-actions">
           <button type="button" id="btn-decline-cancel">Huỷ bỏ</button>
-          <button type="submit" id="btn-decline-confirm" class="danger">Xác nhận từ chối</button>
+          <button type="submit" id="btn-decline-confirm" class="danger solid">Xác nhận từ chối</button>
         </div>
       </form>
     </dialog>
 
-    <div class="toasts" id="toasts"></div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <script type="module" src="/sign.js"></script>
   </body>

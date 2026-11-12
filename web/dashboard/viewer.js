@@ -1,6 +1,6 @@
 /**
  * Màn hình xem chi tiết tài liệu đã gửi (in_progress, completed, declined, voided, expired).
- * Bao gồm: PDF viewer đọc, timeline người nhận, liên kết ký, xác thực chữ ký, nhật ký kiểm toán hash-chain.
+ * Bao gồm: PDF viewer đọc, timeline người nhận, liên kết ký, kiểm tra chữ ký, nhật ký kiểm toán hash-chain.
  */
 
 import * as pdfjs from "/vendor/pdfjs/pdf.min.mjs";
@@ -49,11 +49,11 @@ export async function renderSentDoc(container, docId) {
   let pdfDoc = null;
   let pages = [];
   let scale = 1.0;
-  const MIN_SCALE = 0.5;
+  const MIN_SCALE = 0.4;
   const MAX_SCALE = 2.5;
 
   // Header thanh công cụ
-  const backLink = el("a", { href: "#/documents", className: "button" }, "← Danh sách");
+  const backLink = el("a", { href: "#/documents", className: "button" }, "Danh sách");
   const docTitleSpan = el("span", { className: "editor-header-title" }, doc.title || doc.filename);
   const statusBadge = el(
     "span",
@@ -69,32 +69,34 @@ export async function renderSentDoc(container, docId) {
       target: "_blank",
       rel: "noopener",
     },
-    "⤓ Tải PDF"
+    "Tải PDF"
   );
 
   const verifyBtn = el(
     "button",
     {
+      type: "button",
       className: "button",
       onClick: verifySignatures,
     },
-    "Xác thực chữ ký"
+    "Kiểm tra chữ ký"
   );
 
   const actionsRight = el("div", { className: "editor-topbar-right" }, downloadBtn, verifyBtn);
 
-  // Huỷ tài liệu nếu đang ký
+  // Huỷ tài liệu nếu đang ký (nút quiet .button.danger)
   if (doc.status === "in_progress") {
     const voidBtn = el(
       "button",
       {
+        type: "button",
         className: "button danger",
         onClick: () => {
           promptModal({
             title: "Huỷ tài liệu",
-            message: "Nhập lý do huỷ tài liệu (người nhận sẽ không thể ký tiếp):",
-            placeholder: "Lý do huỷ...",
-            confirmText: "Xác nhận huỷ",
+            message: "Nhập lý do huỷ tài liệu (người nhận sẽ không thể tiếp tục ký):",
+            placeholder: "Lý do huỷ tài liệu…",
+            confirmText: "Huỷ tài liệu",
             onConfirm: async (reason) => {
               if (!reason) {
                 toast("Vui lòng nhập lý do huỷ tài liệu.", "err");
@@ -108,7 +110,7 @@ export async function renderSentDoc(container, docId) {
                 toast("Đã huỷ tài liệu.", "ok");
                 renderSentDoc(container, doc.id);
               } catch (err) {
-                toast(`Không thể huỷ: ${err.message}`, "err");
+                toast(`Không thể huỷ tài liệu: ${err.message}`, "err");
               }
             },
           });
@@ -124,12 +126,13 @@ export async function renderSentDoc(container, docId) {
     const deleteBtn = el(
       "button",
       {
+        type: "button",
         className: "button danger",
         onClick: () => {
           confirmModal({
             title: "Xoá tài liệu",
             message: "Bạn có chắc chắn muốn xoá vĩnh viễn tài liệu này không?",
-            confirmText: "Xoá vĩnh viễn",
+            confirmText: "Xoá tài liệu",
             danger: true,
             onConfirm: async () => {
               try {
@@ -137,13 +140,13 @@ export async function renderSentDoc(container, docId) {
                 toast("Đã xoá tài liệu.", "ok");
                 location.hash = "#/documents";
               } catch (err) {
-                toast(`Không thể xoá: ${err.message}`, "err");
+                toast(`Không thể xoá tài liệu: ${err.message}`, "err");
               }
             },
           });
         },
       },
-      "Xoá"
+      "Xoá tài liệu"
     );
     actionsRight.appendChild(deleteBtn);
   }
@@ -156,10 +159,10 @@ export async function renderSentDoc(container, docId) {
   );
 
   // PDF Viewer controls
-  const zoomOutBtn = el("button", { className: "button", onClick: () => setScale(scale - 0.15) }, "−");
-  const zoomLevelLabel = el("span", { className: "zoom-label" }, "100%");
-  const zoomInBtn = el("button", { className: "button", onClick: () => setScale(scale + 0.15) }, "+");
-  const zoomFitBtn = el("button", { className: "button", onClick: fitToWidth }, "Vừa khung");
+  const zoomOutBtn = el("button", { type: "button", className: "button", "aria-label": "Thu nhỏ", onClick: () => setScale(scale - 0.15) }, "−");
+  const zoomLevelLabel = el("span", { className: "zoom-label", "aria-live": "polite" }, "100%");
+  const zoomInBtn = el("button", { type: "button", className: "button", "aria-label": "Phóng to", onClick: () => setScale(scale + 0.15) }, "+");
+  const zoomFitBtn = el("button", { type: "button", className: "button", onClick: fitToWidth }, "Vừa khung");
   const pageInfoSpan = el("span", { className: "page-info muted" }, "Đang tải trang…");
 
   const viewerToolbar = el(
@@ -180,6 +183,7 @@ export async function renderSentDoc(container, docId) {
   const tabRecipientsBtn = el(
     "button",
     {
+      type: "button",
       className: `detail-tab ${activeTab === "recipients" ? "active" : ""}`,
       onClick: () => switchTab("recipients"),
     },
@@ -189,6 +193,7 @@ export async function renderSentDoc(container, docId) {
   const tabAuditBtn = el(
     "button",
     {
+      type: "button",
       className: `detail-tab ${activeTab === "audit" ? "active" : ""}`,
       onClick: () => switchTab("audit"),
     },
@@ -227,8 +232,8 @@ export async function renderSentDoc(container, docId) {
       el(
         "div",
         { className: "detail-meta-row" },
-        el("span", { className: "muted" }, "Mã tham chiếu:"),
-        el("span", {}, doc.external_ref ? el("code", {}, doc.external_ref) : "—")
+        el("span", { className: "muted" }, "Mã hồ sơ:"),
+        el("span", {}, doc.external_ref ? el("code", { className: "hash-text" }, doc.external_ref) : "—")
       ),
       el("div", { className: "detail-meta-row" }, el("span", { className: "muted" }, "Ngày tạo:"), el("span", {}, formatDate(doc.created_at))),
       doc.sent_at ? el("div", { className: "detail-meta-row" }, el("span", { className: "muted" }, "Ngày gửi:"), el("span", {}, formatDate(doc.sent_at))) : null,
@@ -252,7 +257,10 @@ export async function renderSentDoc(container, docId) {
           ? "Đã duyệt"
           : rec.status === "declined"
           ? "Đã từ chối"
-          : "Chờ xử lý";
+          : rec.role === "signer"
+          ? "Chờ ký"
+          : "Chờ duyệt";
+
       const statusBadge = el(
         "span",
         { className: `badge badge-${rec.status}` },
@@ -262,24 +270,26 @@ export async function renderSentDoc(container, docId) {
       const header = el(
         "div",
         { className: "timeline-item-header" },
-        el("div", {},
-          el("span", { className: "timeline-order-badge" }, `Bước ${rec.order}`),
-          el("strong", { style: { marginLeft: "8px" } }, rec.name)
+        el("div", { className: "timeline-header-name-box" },
+          el("span", { className: "timeline-order-badge" }, `Lượt ký ${rec.order}`),
+          el("strong", { className: "timeline-recipient-name" }, rec.name)
         ),
         statusBadge
       );
 
-      const methodText = rec.role === "signer"
-        ? (rec.method === "handwritten" ? "Ký tay" : "Ký số")
+      const methodLabel = rec.role === "signer"
+        ? (rec.method === "handwritten" ? "Ký tay" : "Ký số (USB token)")
         : null;
 
       const subInfo = el(
         "div",
-        { className: "timeline-item-meta muted" },
-        el("span", {}, roleText),
-        methodText ? el("span", {}, ` · ${methodText}`) : null,
-        rec.email ? el("span", {}, ` · ${rec.email}`) : null,
-        rec.tax_code ? el("span", {}, ` · MST: ${rec.tax_code}`) : null
+        { className: "timeline-item-meta" },
+        el("div", { className: "timeline-role-line" },
+          el("span", { className: "timeline-role-label" }, roleText),
+          methodLabel ? el("span", { className: "timeline-method-label muted" }, `, ${methodLabel}`) : null
+        ),
+        rec.email ? el("div", { className: "timeline-email-line muted" }, rec.email) : null,
+        rec.tax_code ? el("div", { className: "timeline-tax-line muted" }, `Mã số thuế: ${rec.tax_code}`) : null
       );
 
       const timestamps = el(
@@ -298,7 +308,7 @@ export async function renderSentDoc(container, docId) {
           signatureBox = el(
             "div",
             { className: "sig-details-box" },
-            el("div", { className: "sig-details-title" }, "✓ Chữ ký tay"),
+            el("div", { className: "sig-details-title" }, "Chữ ký tay"),
             el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Người ký:"), el("strong", {}, sig.signer || rec.name)),
             el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Hình thức:"), el("span", {}, "Ký tay"))
           );
@@ -306,11 +316,11 @@ export async function renderSentDoc(container, docId) {
           signatureBox = el(
             "div",
             { className: "sig-details-box" },
-            el("div", { className: "sig-details-title" }, "✓ Thông tin chứng thư số:"),
+            el("div", { className: "sig-details-title" }, "Thông tin chứng thư số"),
             el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Người ký:"), el("strong", {}, sig.signer)),
-            sig.tax_code ? el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "MST:"), el("span", {}, sig.tax_code)) : null,
-            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Nhà cấp (CA):"), el("span", {}, sig.cert_issuer)),
-            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Serial chứng thư:"), el("code", {}, sig.cert_serial)),
+            sig.tax_code ? el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Mã số thuế:"), el("span", {}, sig.tax_code)) : null,
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Nhà cấp chứng thư:"), el("span", {}, sig.cert_issuer)),
+            el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Số serial:"), el("code", { className: "hash-text" }, sig.cert_serial)),
             el("div", { className: "sig-details-row" }, el("span", { className: "muted" }, "Chuẩn ký:"), el("span", {}, sig.profile || "PAdES"))
           );
         }
@@ -326,11 +336,12 @@ export async function renderSentDoc(container, docId) {
           const copyBtn = el(
             "button",
             {
+              type: "button",
               className: "button small",
               onClick: async () => {
                 try {
                   await navigator.clipboard.writeText(rec.signing_url);
-                  toast("Đã sao chép liên kết ký!", "ok");
+                  toast("Đã sao chép liên kết ký.", "ok");
                 } catch {
                   promptModal({
                     title: "Liên kết ký",
@@ -340,7 +351,7 @@ export async function renderSentDoc(container, docId) {
                 }
               },
             },
-            "📋 Sao chép liên kết ký"
+            "Sao chép liên kết ký"
           );
           pendingActions.appendChild(copyBtn);
         }
@@ -350,6 +361,7 @@ export async function renderSentDoc(container, docId) {
           const remindBtn = el(
             "button",
             {
+              type: "button",
               className: "button small",
               onClick: async () => {
                 remindBtn.disabled = true;
@@ -357,7 +369,7 @@ export async function renderSentDoc(container, docId) {
                   await api(`/v1/documents/${doc.id}/recipients/${rec.id}/remind`, {
                     method: "POST",
                   });
-                  toast(`Đã gửi email nhắc nhở tới ${rec.email}`, "ok");
+                  toast(`Đã gửi email nhắc nhở tới ${rec.email}.`, "ok");
                 } catch (err) {
                   toast(`Không thể gửi nhắc nhở: ${err.message}`, "err");
                 } finally {
@@ -365,7 +377,7 @@ export async function renderSentDoc(container, docId) {
                 }
               },
             },
-            "✉ Nhắc lại"
+            "Gửi nhắc nhở"
           );
           pendingActions.appendChild(remindBtn);
         }
@@ -374,12 +386,13 @@ export async function renderSentDoc(container, docId) {
         const rotateBtn = el(
           "button",
           {
+            type: "button",
             className: "button small",
             onClick: () => {
               confirmModal({
                 title: "Cấp liên kết mới",
                 message:
-                  "Liên kết ký cũ sẽ bị vô hiệu hoá ngay lập tức. Bạn có chắc chắn muốn tạo liên kết mới cho người này?",
+                  "Liên kết ký hiện tại sẽ bị vô hiệu hoá ngay lập tức. Người nhận sẽ cần sử dụng liên kết mới để ký.",
                 confirmText: "Cấp liên kết mới",
                 onConfirm: async () => {
                   try {
@@ -388,7 +401,7 @@ export async function renderSentDoc(container, docId) {
                       { method: "POST" }
                     );
                     rec.signing_url = updated.signing_url;
-                    toast("Đã cấp liên kết mới thành công!", "ok");
+                    toast("Đã cấp liên kết mới.", "ok");
                     renderRecipientsTab();
                   } catch (err) {
                     toast(`Lỗi khi tạo liên kết mới: ${err.message}`, "err");
@@ -397,7 +410,7 @@ export async function renderSentDoc(container, docId) {
               });
             },
           },
-          "🔄 Cấp liên kết mới"
+          "Cấp liên kết mới"
         );
         pendingActions.appendChild(rotateBtn);
       }
@@ -432,7 +445,7 @@ export async function renderSentDoc(container, docId) {
       ]);
       const memberNames = new Map(members.map((m) => [m.id, m.name]));
       const recipientNames = new Map((doc.recipients || []).map((r) => [r.id, r.name]));
-      // actor dạng "user:<id>" | "api_key:<id>" | "recipient:<id>" | "system"
+
       const actorLabel = (actor) => {
         const [kind, id] = String(actor || "system").split(":");
         if (kind === "user") return memberNames.get(id) || `Thành viên ${id}`;
@@ -442,7 +455,7 @@ export async function renderSentDoc(container, docId) {
       };
       tabContent.replaceChildren();
 
-      // Badge tính toàn vẹn chuỗi băm
+      // Trạng thái tính toàn vẹn chuỗi băm
       const chainValid = auditData.chain_valid;
       const chainBadge = el(
         "div",
@@ -450,8 +463,8 @@ export async function renderSentDoc(container, docId) {
           className: `chain-status-banner ${chainValid ? "valid" : "broken"}`,
         },
         chainValid
-          ? "✓ Chuỗi băm nhật ký kiểm toán toàn vẹn (SHA-256)"
-          : `✗ Cảnh báo: Chuỗi kiểm toán bị đứt đoạn tại sự kiện #${auditData.broken_at}`
+          ? "Nhật ký kiểm toán toàn vẹn (chuỗi băm SHA-256)"
+          : `Cảnh báo: Chuỗi kiểm toán bị đứt đoạn tại sự kiện #${auditData.broken_at}`
       );
 
       const headHashBox = el(
@@ -494,7 +507,10 @@ export async function renderSentDoc(container, docId) {
                   el("pre", {}, JSON.stringify(ev.data, null, 2))
                 )
               : null,
-            el("div", { className: "audit-hash muted" }, `Hash: ${ev.hash.slice(0, 16)}…`)
+            el("div", { className: "audit-hash muted" },
+              el("span", {}, "Mã băm: "),
+              el("code", { className: "hash-text" }, `${ev.hash.slice(0, 16)}…`)
+            )
           );
 
           eventsList.appendChild(evItem);
@@ -509,10 +525,10 @@ export async function renderSentDoc(container, docId) {
     }
   }
 
-  // Xác thực chữ ký số (/v1/documents/{id}/verify)
+  // Kiểm tra chữ ký số (/v1/documents/{id}/verify)
   async function verifySignatures() {
     showModal({
-      title: "Xác thực chữ ký số tài liệu",
+      title: "Kiểm tra chữ ký số",
       content: el("div", { className: "loading-state" }, "Đang kiểm tra chứng thư và tính toàn vẹn…"),
       actions: [{ label: "Đóng", primary: true }],
     });
@@ -529,12 +545,13 @@ export async function renderSentDoc(container, docId) {
 
       reports.forEach((report) => {
         const tone = !report.intact ? "invalid" : report.trusted ? "valid" : "warn";
-        const statusIcon = tone === "valid" ? "✓" : tone === "warn" ? "!" : "✗";
+        const toneBadgeClass = tone === "valid" ? "badge-completed" : tone === "warn" ? "badge-draft" : "badge-declined";
+        const toneText = tone === "valid" ? "Hợp lệ" : tone === "warn" ? "Cần lưu ý" : "Không hợp lệ";
 
         const lines = [
           `${report.field_name || "Chữ ký"} · ${report.issuer}`,
-          report.tax_code ? `MST: ${report.tax_code}` : null,
-          report.signed_at ? `Ký lúc: ${formatDate(report.signed_at)}` : null,
+          report.tax_code ? `Mã số thuế: ${report.tax_code}` : null,
+          report.signed_at ? `Thời điểm ký: ${formatDate(report.signed_at)}` : null,
           report.timestamped
             ? `Dấu thời gian TSA: ${formatDate(report.timestamp_at)}${
                 report.timestamp_trusted ? " (Tin cậy)" : " (Chưa tin cậy)"
@@ -551,7 +568,12 @@ export async function renderSentDoc(container, docId) {
         const card = el(
           "div",
           { className: `sig-report ${tone}`, style: { marginBottom: "12px" } },
-          el("div", { className: "who" }, `${statusIcon} ${report.signer}`),
+          el(
+            "div",
+            { className: "sig-report-header" },
+            el("span", { className: "who" }, report.signer),
+            el("span", { className: `badge ${toneBadgeClass}` }, toneText)
+          ),
           ...lines.map((l) => el("div", { className: "line table-subtext" }, l))
         );
 
@@ -559,7 +581,7 @@ export async function renderSentDoc(container, docId) {
       });
     } catch (err) {
       modalBody.replaceChildren(
-        el("div", { className: "form-error" }, `Lỗi khi xác thực: ${err.message}`)
+        el("div", { className: "form-error" }, `Lỗi khi kiểm tra chữ ký: ${err.message}`)
       );
     }
   }
@@ -585,6 +607,8 @@ export async function renderSentDoc(container, docId) {
       }).promise;
 
       await layoutPages();
+      // Màn hẹp: trang rộng hơn khung thì co vừa bề ngang ngay từ đầu
+      if (pages[0] && pages[0].holder.offsetWidth > pagesContainer.clientWidth - 48) fitToWidth();
       drawPlacedBoxes();
     } catch (err) {
       pagesContainer.replaceChildren(
@@ -701,8 +725,9 @@ export async function renderSentDoc(container, docId) {
       if (!item) return;
 
       const isSigned = rec.status === "signed";
+      const isHandwritten = rec.signature?.profile === "handwritten" || rec.method === "handwritten";
       const color = isSigned
-        ? { border: "#22c55e", bg: "rgba(34, 197, 94, 0.12)", text: "#86efac" }
+        ? { border: "var(--success)", bg: "var(--success-soft)", text: "var(--success)" }
         : RECIPIENT_COLORS[idx % RECIPIENT_COLORS.length];
 
       const [x1, y1, x2, y2] = rec.field.box;
@@ -730,8 +755,12 @@ export async function renderSentDoc(container, docId) {
       const label = el(
         "div",
         { className: "sig-box-label", style: { color: color.text } },
-        el("strong", {}, isSigned ? `✓ ${rec.name}` : rec.name),
-        el("span", { className: "sig-box-sub" }, isSigned ? "Đã ký số" : "Chờ ký")
+        el("strong", { className: "sig-box-name" }, rec.name),
+        el(
+          "span",
+          { className: "sig-box-sub" },
+          isSigned ? (isHandwritten ? "Đã ký tay" : "Đã ký số") : "Chờ ký"
+        )
       );
 
       div.appendChild(label);

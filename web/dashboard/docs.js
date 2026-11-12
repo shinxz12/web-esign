@@ -2,8 +2,27 @@
  * Danh sách tài liệu và tạo tài liệu mới (tải PDF lên).
  */
 
-import { api, el, formatDate, STATUS_LABELS, toast } from "./api.js";
+import { api, el, STATUS_LABELS, toast } from "./api.js";
 
+function formatShortDate(isoString) {
+  if (!isoString) return "—";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const parts = new Intl.DateTimeFormat("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}`;
+  } catch {
+    return isoString;
+  }
+}
 /**
  * Màn hình danh sách tài liệu (#/documents)
  */
@@ -31,7 +50,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
   const newDocBtn = el(
     "a",
     { href: "#/documents/new", className: "button primary" },
-    "+ Tạo tài liệu"
+    "Tạo tài liệu"
   );
   const header = el("div", { className: "page-header" }, titleHeading, newDocBtn);
 
@@ -42,6 +61,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
       "button",
       {
         className: `filter-tab ${currentStatus === tab.id ? "active" : ""}`,
+        dataset: { tabId: tab.id },
         onClick: () => {
           if (currentStatus === tab.id) return;
           currentStatus = tab.id;
@@ -62,7 +82,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
   const searchInput = el("input", {
     type: "search",
     className: "search-input",
-    placeholder: "Tìm theo tiêu đề, tên tệp, external_ref…",
+    placeholder: "Tìm theo tiêu đề hoặc tên tệp…",
     value: searchQuery,
     onInput: (e) => {
       clearTimeout(searchTimeout);
@@ -91,8 +111,8 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
       el(
         "tr",
         {},
-        el("th", {}, "Tiêu đề & Tệp"),
-        el("th", {}, "Mã tham chiếu"),
+        el("th", {}, "Tài liệu"),
+        el("th", {}, "Mã hồ sơ"),
         el("th", {}, "Trạng thái"),
         el("th", {}, "Tiến độ ký"),
         el("th", {}, "Cập nhật"),
@@ -112,17 +132,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
     "Tải thêm"
   );
 
-  const emptyState = el(
-    "div",
-    { className: "empty-state", hidden: true },
-    el("div", { className: "empty-icon" }, "📄"),
-    el("p", { className: "muted" }, "Không tìm thấy tài liệu nào phù hợp."),
-    el(
-      "a",
-      { href: "#/documents/new", className: "button primary", style: { marginTop: "12px" } },
-      "Tải lên tài liệu đầu tiên"
-    )
-  );
+  const emptyState = el("div", { className: "empty-state", hidden: true });
 
   const tableWrapper = el(
     "div",
@@ -162,6 +172,43 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
         emptyState.hidden = false;
         table.hidden = true;
         loadMoreBtn.style.display = "none";
+        emptyState.replaceChildren();
+
+        const isFiltered = Boolean(currentStatus || searchQuery);
+        if (isFiltered) {
+          emptyState.appendChild(
+            el("p", { className: "muted" }, "Không tìm thấy tài liệu nào phù hợp với bộ lọc hiện tại.")
+          );
+          const clearFilterBtn = el(
+            "button",
+            {
+              className: "button",
+              style: { marginTop: "12px" },
+              onClick: () => {
+                currentStatus = "";
+                searchQuery = "";
+                searchInput.value = "";
+                for (const btn of tabsContainer.children) {
+                  btn.classList.toggle("active", btn.dataset?.tabId === "");
+                }
+                loadData(true);
+              },
+            },
+            "Xoá bộ lọc"
+          );
+          emptyState.appendChild(clearFilterBtn);
+        } else {
+          emptyState.appendChild(
+            el("p", { className: "muted" }, "Chưa có tài liệu nào. Tải lên tệp PDF đầu tiên để gửi đi ký.")
+          );
+          emptyState.appendChild(
+            el(
+              "a",
+              { href: "#/documents/new", className: "button primary", style: { marginTop: "12px" } },
+              "Tạo tài liệu"
+            )
+          );
+        }
         return;
       }
 
@@ -196,7 +243,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
 
     let progressText = "—";
     if (total > 0) {
-      progressText = `${completed}/${total} người`;
+      progressText = `${completed}/${total} đã ký`;
     }
 
     const statusBadge = el(
@@ -239,7 +286,7 @@ export function renderDocumentsList(container, filterStatus = "", query = "") {
       el("td", {}, doc.external_ref ? el("code", {}, doc.external_ref) : "—"),
       el("td", {}, statusBadge),
       el("td", {}, progressText),
-      el("td", { className: "muted" }, formatDate(doc.updated_at || doc.created_at)),
+      el("td", { className: "muted" }, formatShortDate(doc.updated_at || doc.created_at)),
       el("td", { style: { textAlign: "right" } }, actionBtn)
     );
 
@@ -256,17 +303,87 @@ export function renderNewDocument(container) {
   container.replaceChildren();
 
   const fileInput = el("input", {
+    id: "new-doc-file",
     type: "file",
     accept: "application/pdf",
     required: true,
     hidden: true,
   });
 
+  function createUploadSvg() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "32");
+    svg.setAttribute("height", "32");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.75");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>';
+    return svg;
+  }
+
+  function createPdfSvg() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>';
+    return svg;
+  }
+
+  function createCloseSvg() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>';
+    return svg;
+  }
+
+  function createRefreshSvg() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>';
+    return svg;
+  }
+
   const fileDropZone = el(
     "div",
     {
       className: "file-drop-zone",
+      tabIndex: 0,
+      role: "button",
+      ariaLabel: "Chọn tệp PDF hoặc kéo thả vào đây",
       onClick: () => fileInput.click(),
+      onKeydown: (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          fileInput.click();
+        }
+      },
       onDragover: (e) => {
         e.preventDefault();
         fileDropZone.classList.add("drag-over");
@@ -280,9 +397,9 @@ export function renderNewDocument(container) {
         }
       },
     },
-    el("div", { className: "drop-icon" }, "📥"),
+    el("div", { className: "drop-icon-wrap" }, createUploadSvg()),
     el("div", { className: "drop-prompt" }, "Chọn tệp PDF hoặc kéo thả vào đây"),
-    el("div", { className: "drop-hint muted" }, "Định dạng .pdf, tối đa theo giới hạn của gói"),
+    el("div", { className: "drop-hint muted" }, "Định dạng .pdf, dung lượng tối đa theo giới hạn của gói"),
     fileInput
   );
 
@@ -296,31 +413,35 @@ export function renderNewDocument(container) {
       return;
     }
     selectedFile = file;
+
+    const removeBtn = el(
+      "button",
+      {
+        type: "button",
+        className: "btn-remove-file",
+        ariaLabel: "Xoá tệp đã chọn",
+        title: "Xoá tệp đã chọn",
+        onClick: (e) => {
+          e.stopPropagation();
+          selectedFile = null;
+          fileInput.value = "";
+          fileInfoBox.hidden = true;
+          fileDropZone.hidden = false;
+          updateSubmit();
+        },
+      },
+      createCloseSvg()
+    );
+
     fileInfoBox.replaceChildren(
-      el("span", { className: "file-icon" }, "📄"),
+      createPdfSvg(),
       el("span", { className: "file-name" }, file.name),
       el("span", { className: "file-size muted" }, ` (${(file.size / 1024 / 1024).toFixed(2)} MB)`),
-      el(
-        "button",
-        {
-          type: "button",
-          className: "btn-remove-file",
-          onClick: (e) => {
-            e.stopPropagation();
-            selectedFile = null;
-            fileInput.value = "";
-            fileInfoBox.hidden = true;
-            fileDropZone.hidden = false;
-            updateSubmit();
-          },
-        },
-        "✕"
-      )
+      removeBtn
     );
     fileInfoBox.hidden = false;
     fileDropZone.hidden = true;
 
-    // Tự động điền tiêu đề nếu chưa có
     if (!titleInput.value) {
       titleInput.value = file.name.replace(/\.pdf$/i, "");
     }
@@ -334,31 +455,20 @@ export function renderNewDocument(container) {
   });
 
   const titleInput = el("input", {
+    id: "new-doc-title",
     type: "text",
     placeholder: "Hợp đồng kinh tế số 01/2026...",
   });
-  const messageInput = el("textarea", {
-    placeholder: "Lời nhắn gửi đến những người nhận (không bắt buộc)…",
-    rows: 3,
-  });
-  const externalRefInput = el("input", {
-    type: "text",
-    placeholder: "HD-2026-001 (mã hợp đồng nội bộ)",
-  });
-  const expiryInput = el("input", {
-    type: "datetime-local",
-  });
 
-  // "Tôi tự ký ngay": người đang đăng nhập là người ký duy nhất. Người nhận được khai đúng theo chứng thư đang
-  // cắm (tên CN + MST) để qua được kiểm tra danh tính, rồi chuyển thẳng sang trang ký; ký xong tải PDF ở đó.
   let mode = "send";
   let certificates = [];
-  const certSelect = el("select", { hidden: true });
+  const certSelect = el("select", { id: "new-doc-cert", hidden: true });
   const pairingInput = el("input", {
+    id: "new-doc-pairing",
     type: "text",
     inputMode: "numeric",
     maxLength: 6,
-    placeholder: "Mã ghép cặp",
+    placeholder: "Mã 6 chữ số",
     style: { width: "130px", flex: "none" },
   });
   const certStatus = el("span", { className: "muted", style: { fontSize: "13px", flex: "1 1 100%" } });
@@ -372,25 +482,25 @@ export function renderNewDocument(container) {
       )
     );
     certStatus.textContent = list.length
-      ? `${list.length} chứng thư từ ${source}.`
-      : "Agent chạy nhưng chưa thấy chứng thư — kiểm tra token đã cắm.";
+      ? `${list.length} chứng thư từ ứng dụng Web Signer trên máy tính.`
+      : "Ứng dụng Web Signer trên máy tính đang chạy nhưng chưa thấy chứng thư. Hãy kiểm tra token đã cắm vào máy.";
     updateSubmit();
   }
 
   async function loadDeviceCertificates() {
-    certStatus.textContent = "Đang tìm agent của máy này…";
+    certStatus.textContent = "Đang tìm ứng dụng Web Signer trên máy tính…";
     try {
       const res = await api("/api/agents");
       if (res.online) {
-        fillCertificates(res.certificates, "agent của máy này");
+        fillCertificates(res.certificates, "ứng dụng của máy này");
         return;
       }
       certificates = [];
       certSelect.replaceChildren();
       certSelect.hidden = true;
       certStatus.textContent = res.device
-        ? "Agent của máy này đang tắt — mở agent rồi bấm ↻, hoặc nhập mã ghép cặp."
-        : "Chưa thấy agent — bấm “Kích hoạt trình duyệt” trên agent, hoặc nhập mã ghép cặp.";
+        ? "Ứng dụng Web Signer trên máy tính chưa mở. Hãy mở ứng dụng rồi bấm tìm lại, hoặc nhập mã ghép cặp."
+        : "Chưa kết nối với ứng dụng Web Signer trên máy tính. Mở ứng dụng và bấm “Kích hoạt trình duyệt”, hoặc nhập mã ghép cặp.";
     } catch (err) {
       certStatus.textContent = err.message;
     }
@@ -412,16 +522,28 @@ export function renderNewDocument(container) {
   }
 
   const nowrap = { whiteSpace: "nowrap", flex: "none" };
+  const refreshBtn = el(
+    "button",
+    {
+      type: "button",
+      title: "Tìm lại kết nối ứng dụng Web Signer",
+      ariaLabel: "Tìm lại kết nối ứng dụng Web Signer",
+      style: nowrap,
+      onClick: loadDeviceCertificates,
+    },
+    createRefreshSvg()
+  );
+
   const selfBox = el(
     "div",
     { className: "form-group", hidden: true },
-    el("label", {}, "Chứng thư dùng để ký *"),
+    el("label", { htmlFor: "new-doc-cert" }, "Chứng thư dùng để ký"),
     certSelect,
     el(
       "div",
       { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginTop: "6px" } },
       certStatus,
-      el("button", { type: "button", title: "Tìm lại agent của máy này", style: nowrap, onClick: loadDeviceCertificates }, "↻"),
+      refreshBtn,
       pairingInput,
       el("button", { type: "button", style: nowrap, onClick: loadPairedCertificates }, "Dùng mã")
     )
@@ -434,11 +556,11 @@ export function renderNewDocument(container) {
       className: "primary",
       disabled: true,
     },
-    "Tải lên & Chuyển sang chỉnh sửa"
+    "Tải lên và thêm người nhận"
   );
 
   function submitLabel() {
-    return mode === "self" ? "Tải lên & Ký ngay" : "Tải lên & Chuyển sang chỉnh sửa";
+    return mode === "self" ? "Tải lên và ký" : "Tải lên và thêm người nhận";
   }
 
   function updateSubmit() {
@@ -446,46 +568,65 @@ export function renderNewDocument(container) {
     submitBtn.disabled = !selectedFile || (mode === "self" && !certificates.length);
   }
 
-  const messageGroup = el("div", { className: "form-group" }, el("label", {}, "Lời nhắn gửi kèm"), messageInput);
-  const expiryGroup = el("div", { className: "form-group" }, el("label", {}, "Thời hạn hoàn tất"), expiryInput);
-  const titleGroup = el("div", { className: "form-group" }, el("label", {}, "Tiêu đề tài liệu"), titleInput);
-  const externalRefGroup = el(
+  const titleGroup = el(
     "div",
     { className: "form-group" },
-    el("label", {}, "Mã tham chiếu ngoài (external_ref)"),
-    externalRefInput
+    el("label", { htmlFor: "new-doc-title" }, "Tiêu đề tài liệu"),
+    titleInput
   );
 
   function setMode(next) {
     mode = next;
     const self = mode === "self";
     selfBox.hidden = !self;
-    // Tự ký: chỉ cần tệp + chứng thư; tiêu đề lấy từ tên tệp.
-    for (const group of [messageGroup, expiryGroup, titleGroup, externalRefGroup]) group.hidden = self;
+    titleGroup.hidden = self;
     form.classList.toggle("compact", self);
     if (self && !certificates.length) loadDeviceCertificates();
     updateSubmit();
   }
 
-  const optionStyle = { display: "flex", alignItems: "center", gap: "6px", fontWeight: "normal", textTransform: "none", letterSpacing: "normal", margin: 0 };
+  const optionStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontWeight: "normal",
+    textTransform: "none",
+    letterSpacing: "normal",
+    margin: 0,
+    cursor: "pointer",
+  };
+
   const modeGroup = el(
-    "div",
-    { className: "form-group" },
-    el("label", {}, "Cách ký"),
+    "fieldset",
+    { className: "form-group mode-group" },
+    el("legend", {}, "Hình thức xử lý"),
     el(
       "div",
-      { style: { display: "flex", flexWrap: "wrap", gap: "8px 20px" } },
+      { style: { display: "flex", flexWrap: "wrap", gap: "12px 24px" } },
       el(
         "label",
         { style: optionStyle },
-        el("input", { type: "radio", name: "sign-mode", value: "send", checked: true, onChange: () => setMode("send") }),
+        el("input", {
+          type: "radio",
+          name: "sign-mode",
+          id: "mode-send",
+          value: "send",
+          checked: true,
+          onChange: () => setMode("send"),
+        }),
         "Gửi người khác ký"
       ),
       el(
         "label",
         { style: optionStyle },
-        el("input", { type: "radio", name: "sign-mode", value: "self", onChange: () => setMode("self") }),
-        "Tôi tự ký ngay (USB token), ký xong tải PDF"
+        el("input", {
+          type: "radio",
+          name: "sign-mode",
+          id: "mode-self",
+          value: "self",
+          onChange: () => setMode("self"),
+        }),
+        "Tự ký bằng USB token"
       )
     )
   );
@@ -511,7 +652,7 @@ export function renderNewDocument(container) {
         }
 
         submitBtn.disabled = true;
-        submitBtn.textContent = "Đang tải tệp lên…";
+        submitBtn.textContent = "Đang tải lên…";
 
         try {
           const docData = {
@@ -522,16 +663,6 @@ export function renderNewDocument(container) {
             if (!cert) throw new Error("Chưa chọn chứng thư để ký.");
             docData.send = true;
             docData.recipients = [{ name: cert.subject, ...(cert.tax_code ? { tax_code: cert.tax_code } : {}) }];
-          } else {
-            if (messageInput.value.trim()) {
-              docData.message = messageInput.value.trim();
-            }
-            if (expiryInput.value) {
-              docData.expires_at = new Date(expiryInput.value).toISOString();
-            }
-          }
-          if (externalRefInput.value.trim()) {
-            docData.external_ref = externalRefInput.value.trim();
           }
 
           const formData = new FormData();
@@ -545,11 +676,10 @@ export function renderNewDocument(container) {
 
           const selfLink = mode === "self" ? res.recipients?.[0]?.signing_url : null;
           if (selfLink) {
-            // Trang ký tự thấy agent của máy (cookie thiết bị); ký xong có nút tải PDF.
             location.href = selfLink;
             return;
           }
-          toast("Đã tạo tài liệu thành công!", "ok");
+          toast("Đã tạo tài liệu thành công.", "ok");
           location.hash = `#/documents/${res.id}`;
         } catch (err) {
           toast(err.message, "err");
@@ -558,20 +688,28 @@ export function renderNewDocument(container) {
       },
     },
     modeGroup,
-    el("div", { className: "form-group" }, el("label", {}, "Tệp tài liệu PDF *"), fileDropZone, fileInfoBox),
+    el(
+      "div",
+      { className: "form-group" },
+      el("label", { htmlFor: "new-doc-file" }, "Tệp PDF cần ký"),
+      fileDropZone,
+      fileInfoBox
+    ),
     selfBox,
     titleGroup,
-    externalRefGroup,
-    expiryGroup,
-    messageGroup,
     el("div", { className: "form-actions", style: { marginTop: "24px" } }, submitBtn, cancelBtn)
+  );
+
+  const heading = el("h2", { className: "page-title" }, "Tải lên tài liệu mới");
+  const subtext = el(
+    "p",
+    { className: "muted" },
+    "Tải lên tệp PDF để chuẩn bị người nhận và vị trí ký."
   );
 
   const card = el(
     "div",
-    { className: "card content-card", style: { maxWidth: "720px", margin: "0 auto" } },
-    el("h2", { style: { marginTop: 0 } }, "Tải lên tài liệu mới"),
-    el("p", { className: "muted" }, "Tải lên tệp PDF để thiết lập người nhận và vị trí các ô ký"),
+    { className: "card content-card", style: { maxWidth: "680px" } },
     form
   );
 
@@ -579,8 +717,9 @@ export function renderNewDocument(container) {
     el(
       "div",
       { className: "breadcrumb" },
-      el("a", { href: "#/documents" }, "← Danh sách tài liệu")
+      el("a", { href: "#/documents" }, "Quay lại danh sách tài liệu")
     ),
+    el("div", { className: "page-header" }, el("div", {}, heading, subtext)),
     card
   );
 }

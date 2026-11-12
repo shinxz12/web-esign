@@ -2,8 +2,16 @@
  * Quản lý Gói dịch vụ & Lịch sử sử dụng (#/billing)
  * Thống kê hạn mức tháng này, lịch sử sử dụng, và so sánh các gói dịch vụ.
  */
-
 import { api, el, showModal, state, toast } from "./api.js";
+
+function formatPeriod(periodStr) {
+  if (!periodStr) return "";
+  const parts = periodStr.split("-");
+  if (parts.length === 2) {
+    return `Tháng ${parts[1]}/${parts[0]}`;
+  }
+  return `Tháng ${periodStr}`;
+}
 
 export async function renderBilling(container) {
   container.replaceChildren();
@@ -54,7 +62,7 @@ export async function renderBilling(container) {
             className: "button primary",
             onClick: () => contactUpgrade(plan),
           },
-          "Liên hệ để nâng cấp"
+          "Liên hệ nâng cấp gói"
         )
       ),
 
@@ -65,12 +73,12 @@ export async function renderBilling(container) {
         el(
           "div",
           { className: "meter-box" },
-          el("div", { className: "meter-label muted" }, `Tài liệu đã tạo (Tháng ${usageData.period})`),
+          el("div", { className: "meter-label muted" }, `Tài liệu đã tạo (${formatPeriod(usageData.period)})`),
           el(
             "div",
             { className: "meter-numbers" },
             el("span", { className: "meter-used" }, String(currentDocs)),
-            el("span", { className: "meter-limit muted" }, ` / ${isUnlimitedDocs ? "Không giới hạn" : `${maxDocs} tài liệu`}`)
+            el("span", { className: "meter-limit muted" }, isUnlimitedDocs ? " tài liệu (không giới hạn)" : ` trên ${maxDocs} tài liệu`)
           ),
           !isUnlimitedDocs
             ? el(
@@ -88,14 +96,14 @@ export async function renderBilling(container) {
         el(
           "div",
           { className: "meter-box" },
-          el("div", { className: "meter-label muted" }, `Lượt ký số hoàn tất (Tháng ${usageData.period})`),
+          el("div", { className: "meter-label muted" }, `Lượt ký số hoàn tất (${formatPeriod(usageData.period)})`),
           el(
             "div",
             { className: "meter-numbers" },
             el("span", { className: "meter-used" }, String(currentSigs)),
-            el("span", { className: "meter-limit muted" }, " chữ ký")
+            el("span", { className: "meter-limit muted" }, " lượt ký")
           ),
-          el("div", { className: "table-subtext muted", style: { marginTop: "14px" } }, "Được ghi nhận khi các bên hoàn tất ký PAdES")
+          el("div", { className: "table-subtext muted", style: { marginTop: "14px" } }, "Được tính khi các bên hoàn tất ký số vào tài liệu")
         )
       ),
 
@@ -147,7 +155,7 @@ export async function renderBilling(container) {
           el(
             "tr",
             {},
-            el("td", {}, el("strong", {}, `Tháng ${h.period}`)),
+            el("td", {}, el("strong", {}, formatPeriod(h.period))),
             el("td", {}, String(h.documents)),
             el("td", {}, String(h.signatures))
           )
@@ -190,16 +198,15 @@ export async function renderBilling(container) {
         el(
           "ul",
           { className: "plan-features-list" },
-          el("li", {}, `✓ Tệp tối đa ${p.max_file_mb} MB`),
-          el("li", {}, `✓ Tối đa ${p.max_recipients} người nhận/tài liệu`),
-          el("li", {}, `✓ ${p.max_members ? `${p.max_members} thành viên` : "Không giới hạn thành viên"}`),
-          el("li", {}, `✓ ${p.max_api_keys} khoá API tích hợp`),
-          el("li", {}, `✓ ${p.max_webhooks} webhook tự động`),
-          el("li", {}, `✓ Tốc độ API ${p.api_requests_per_minute} req/phút`),
-          el("li", {}, "✓ Chuẩn ký PAdES B-B, B-T, B-LT"),
-          el("li", {}, "✓ Nhật ký kiểm toán hash-chain")
+          el("li", {}, `Tệp tối đa ${p.max_file_mb} MB`),
+          el("li", {}, `Tối đa ${p.max_recipients} người nhận mỗi tài liệu`),
+          el("li", {}, p.max_members ? `Tối đa ${p.max_members} thành viên` : "Không giới hạn thành viên"),
+          el("li", {}, `Tối đa ${p.max_api_keys} khoá API`),
+          el("li", {}, `Tối đa ${p.max_webhooks} webhook`),
+          el("li", {}, `Tốc độ API ${p.api_requests_per_minute} lượt/phút`),
+          el("li", {}, "Chuẩn ký số PAdES đầy đủ giá trị pháp lý"),
+          el("li", {}, "Nhật ký kiểm toán theo dõi tính toàn vẹn")
         ),
-
         isCurrent
           ? el("button", { className: "button full-width", disabled: true }, "Gói hiện tại")
           : el(
@@ -227,27 +234,27 @@ export async function renderBilling(container) {
 
 function contactUpgrade(targetPlan) {
   showModal({
-    title: "Liên hệ nâng cấp gói dịch vụ",
+    title: "Liên hệ nâng cấp gói",
     content: el(
       "div",
       {},
       el(
         "p",
         {},
-        `Bạn đang quan tâm đến gói dịch vụ `,
+        "Bạn đang quan tâm đến gói dịch vụ ",
         el("strong", {}, targetPlan.name),
-        `.`
+        "."
       ),
       el(
         "p",
         { className: "muted" },
-        "Vui lòng gửi email hoặc liên hệ với bộ phận hỗ trợ khách hàng của chúng tôi để được tư vấn và kích hoạt gói:"
+        "Vui lòng gửi email hoặc liên hệ bộ phận hỗ trợ khách hàng để được tư vấn và kích hoạt gói:"
       ),
       el(
         "div",
         { className: "contact-info-box" },
-        el("div", {}, "📧 Email: ", el("a", { href: "mailto:support@websigner.vn" }, "support@websigner.vn")),
-        el("div", { style: { marginTop: "6px" } }, "📞 Hotline: ", el("strong", {}, "1900 6868"))
+        el("div", {}, "Email: ", el("a", { href: "mailto:support@websigner.vn" }, "support@websigner.vn")),
+        el("div", { style: { marginTop: "6px" } }, "Hotline: ", el("strong", {}, "1900 6868"))
       )
     ),
     actions: [{ label: "Đóng", primary: true }],
