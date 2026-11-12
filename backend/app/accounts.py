@@ -62,12 +62,16 @@ def _now() -> datetime:
 def user_view(row: dict) -> dict:
     created = row["created_at"]
     created_str = created.isoformat() if isinstance(created, datetime) else str(created)
+    if "pending" in row and row["pending"] is not None:
+        pending = bool(row["pending"])
+    else:
+        pending = row.get("password_hash") is None
     return {
         "id": row["id"],
         "email": row["email"],
         "name": row["name"],
         "role": row["role"],
-        "pending": row.get("password_hash") is None,
+        "pending": pending,
         "created_at": created_str,
     }
 
@@ -380,10 +384,11 @@ async def update_org(
 
 async def list_members(org_id: str) -> list[dict]:
     rows = await db.fetchall(
-        "SELECT u.id, u.email, u.name, u.password_hash, m.role, m.created_at "
+        "SELECT u.id, u.email, u.name, u.pending, m.role, m.created_at "
         "FROM memberships m JOIN users u ON u.id = m.user_id "
         "WHERE m.org_id = %s ORDER BY m.created_at",
         (org_id,),
+        org_id=org_id,
     )
     return [user_view(r) for r in rows]
 
@@ -470,10 +475,11 @@ async def invite_member(
 
 async def _member(org_id: str, user_id: str) -> dict:
     row = await db.fetchone(
-        "SELECT u.id, u.email, u.name, u.password_hash, m.role, m.created_at "
+        "SELECT u.id, u.email, u.name, u.pending, m.role, m.created_at "
         "FROM memberships m JOIN users u ON u.id = m.user_id "
         "WHERE m.user_id = %s AND m.org_id = %s",
         (user_id, org_id),
+        org_id=org_id,
     )
     if row is None:
         raise not_found("Không tìm thấy thành viên")
@@ -489,15 +495,20 @@ async def update_member_role(org_id: str, user_id: str, role: str) -> dict:
     await db.execute(
         "UPDATE memberships SET role = %s WHERE user_id = %s AND org_id = %s",
         (role, user_id, org_id),
+        org_id=org_id,
     )
-    return await _member(org_id, user_id)
+    return user_view(await _member(org_id, user_id))
 
 
 async def remove_member(org_id: str, user_id: str) -> None:
     member = await _member(org_id, user_id)
     if member["role"] == "owner":
         raise ApiError(409, "owner_locked", "Không xoá được chủ tổ chức")
-    await db.execute("DELETE FROM memberships WHERE user_id = %s AND org_id = %s", (user_id, org_id))
+    await db.execute(
+        "DELETE FROM memberships WHERE user_id = %s AND org_id = %s",
+        (user_id, org_id),
+        org_id=org_id,
+    )
 
 
 async def list_user_orgs(user_id: str, active_org_id: str) -> list[dict]:

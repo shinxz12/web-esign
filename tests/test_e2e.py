@@ -705,6 +705,61 @@ def test_thanh_vien_khong_co_quyen_quan_tri(lab, owner):
     assert again.post("/api/auth/login", {"email": email, "password": "sai-mat-khau-roi"})[1]["code"] == "invalid_credentials"
 
 
+
+def test_quan_ly_thanh_vien_to_chuc(lab):
+    """GET /api/org/members, mời thành viên, đổi vai trò và xoá thành viên."""
+    org = register(lab.main, lab=lab)
+
+    # 1. Chủ tổ chức vừa đăng ký: danh sách có đúng 1 người (owner), không pending, không lộ hash
+    status, members = org.get("/api/org/members")
+    assert status == 200, members
+    assert len(members) == 1
+    assert members[0]["id"] == org.me["user"]["id"]
+    assert members[0]["role"] == "owner"
+    assert members[0]["pending"] is False
+    assert "password_hash" not in members[0]
+
+    # 2. Mời thành viên mới
+    email = f"mem-{uuid.uuid4().hex[:8]}@e2e.vn"
+    status, invited = org.post("/api/org/members", {"email": email, "name": "Nguyễn Văn Member", "role": "member"})
+    assert status == 201, invited
+    member_id = invited["member"]["id"]
+    assert invited["member"]["pending"] is True
+    assert "password_hash" not in invited["member"]
+
+    # 3. GET /api/org/members: thấy 2 người, thành viên mới pending = True
+    status, members = org.get("/api/org/members")
+    assert status == 200
+    assert len(members) == 2
+    mem_map = {m["id"]: m for m in members}
+    assert mem_map[member_id]["pending"] is True
+    assert mem_map[member_id]["role"] == "member"
+    assert "password_hash" not in mem_map[member_id]
+
+    # 4. Đổi vai trò thành admin (PATCH /api/org/members/{user_id})
+    status, updated = org.patch(f"/api/org/members/{member_id}", {"role": "admin"})
+    assert status == 200, updated
+    assert updated["role"] == "admin"
+    assert "password_hash" not in updated
+
+    # 5. Chủ tổ chức không thể tự hạ quyền mình (owner_locked)
+    status, err = org.patch(f"/api/org/members/{org.me['user']['id']}", {"role": "member"})
+    assert status == 409 and err["code"] == "owner_locked"
+
+    # 6. Chủ tổ chức không thể tự xoá mình (owner_locked)
+    status, err = org.delete(f"/api/org/members/{org.me['user']['id']}")
+    assert status == 409 and err["code"] == "owner_locked"
+
+    # 7. Xoá thành viên (DELETE /api/org/members/{user_id})
+    status, _ = org.delete(f"/api/org/members/{member_id}")
+    assert status == 204
+
+    # 8. GET /api/org/members: chỉ còn lại chủ tổ chức
+    status, members = org.get("/api/org/members")
+    assert status == 200
+    assert len(members) == 1
+    assert members[0]["id"] == org.me["user"]["id"]
+
 def test_nhap_tai_lieu_tu_ban_luu_bang_tep(lab, api, pdf):
     """Bản cũ lưu tài liệu thành tệp và chủ là cookie ẩn danh; CLI đưa chúng vào một tổ chức."""
     source = create_document(api, pdf, [SIGNER_A])
